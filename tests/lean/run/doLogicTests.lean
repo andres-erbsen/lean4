@@ -85,13 +85,16 @@ theorem sum_loop_spec :
   mintro -
   unfold sum_loop
   mspec
-  case inv => exact (⇓ (xs, r) => ⌜(∀ x ∈ xs.suffix, x ≤ 5) ∧ r + xs.suffix.length * 5 ≤ 25⌝)
-  all_goals simp_all +decide; try omega
-  intros
-  mintro _
-  mspec
-  simp_all +decide
-  omega
+  case inv1 => exact fun xs r => ⌜(∀ x ∈ xs.suffix, x ≤ 5) ∧ r + xs.suffix.length * 5 ≤ 25⌝
+  case vc1 =>
+    intros _ _ _ _ _ _ hcont
+    mintro _
+    mspec hcont
+    grind
+  case vc2 =>
+    intro s; mintro _; mspec; grind
+  case vc3 =>
+    grind
 
 theorem mkFreshNat_spec [Monad m] [WPMonad m sh] :
   ⦃fun p => ⌜p.1 = n ∧ p.2 = o⌝⦄
@@ -150,23 +153,23 @@ theorem throwing_loop_spec :
   mspec
   mspec
   mspec
-  case inv => exact post⟨fun (xs, r) s => ⌜r ≤ 4 ∧ s = 4 ∧ r + xs.suffix.sum > 4⌝, fun e s => ⌜e = 42 ∧ s = 4⌝⟩
-  case post.success =>
+  case inv1 => exact fun xs r s => ⌜r ≤ 4 ∧ s = 4 ∧ r + xs.suffix.sum > 4⌝
+  case vc1 => simp [*]
+  case vc2 =>
+    intros _ _ _ _ _ _ _ _ hcontinue
+    mintro _
+    split
+    case isTrue => intro _; mintro _; mspec; mspec; intro _; simp_all
+    case isFalse => intro _; mintro _; mspec hcontinue; intro _; simp_all +arith
+  case vc3 =>
+    intros
+    mintro _
     mspec
     mspec
     mspec
     simp_all only [List.sum_nil, Nat.add_zero, gt_iff_lt, SPred.down_pure, SPred.entails_nil,
       imp_false, not_true_eq_false]
     omega
-  case post.except => simp
-  case pre => simp_all +decide
-  case step =>
-    simp_all
-    intros
-    mintro _
-    split
-    case isTrue => intro _; mintro _; mspec; mspec; intro _; simp_all
-    case isFalse => intro _; mintro _; mspec; intro _; simp_all +arith
 
 theorem beaking_loop_spec :
   ⦃fun s => ⌜s = 42⌝⦄
@@ -176,15 +179,19 @@ theorem beaking_loop_spec :
   dsimp only [breaking_loop, get, getThe, instMonadStateOfOfMonadLift, liftM, monadLift]
   mspec
   mspec
-  case inv => exact (⇓ (xs, r) s => ⌜(r ≤ 4 ∧ r = xs.prefix.sum ∨ r > 4) ∧ s = 42⌝)
+  case inv1 => exact fun xs r s => ⌜(r ≤ 4 ∧ r = xs.prefix.sum ∨ r > 4) ∧ s = 42⌝
   all_goals simp_all
-  case post => grind
-  case step =>
-    intros
+  · intros _ _ _ _ _ _ hcontinue
     mintro _
     split
-    case isTrue => intro _; mintro _; mspec; simp_all
-    case isFalse => intro _; mintro _; mspec; simp_all; omega
+    case isTrue => intro _; mintro _; mspec
+    case isFalse => intro _; mintro _; mspec hcontinue; simp_all; omega
+  · intros; mintro _; mspec; mspec; mleave; grind
+
+@[grind →]
+theorem List.range'_of_range'_init (h : List.range' start stop = init ++ [last]) :
+    List.range' start (stop-1) = init := by
+  sorry
 
 theorem returning_loop_spec :
   ⦃fun s => ⌜s = 4⌝⦄
@@ -194,25 +201,23 @@ theorem returning_loop_spec :
   dsimp only [returning_loop, get, getThe, instMonadStateOfOfMonadLift, liftM, monadLift]
   mspec
   mspec
-  case inv => exact (⇓ (xs, r) s => ⌜(r.1 = none ∧ r.2 = xs.prefix.sum ∧ r.2 ≤ 4 ∨ r.1 = some 42 ∧ r.2 > 4) ∧ s = 4⌝)
-  all_goals simp_all [-SPred.entails_1]
-  case post =>
-    split
-    · mspec
-      mspec
-      intro _ h
-      simp at h
-      grind
-    · mspec
-      intro _ h
-      simp at h ⊢
-      grind
-  case step =>
+--  case inv1 => exact fun xs r s => ⌜s = 4 ∧ (xs.suffix ≠ [] ∧ r = xs.prefix.sum ∧ r ≤ 4 ∨ xs.suffix = [] ∧ r > 4)⌝
+  case inv1 => exact fun xs r s => ⌜s = 4 ∧ (xs.suffix ≠ [] ∧ r = xs.prefix.sum ∧ r ≤ 4)⌝
+  all_goals mleave
+  case vc1 => grind
+  case vc2 =>
     intros
+    rename_i hcontinue
     mintro _
     split
     case isTrue => intro _; mintro _; mspec; simp_all
-    case isFalse => intro _; mintro _; mspec; simp_all; omega
+    case isFalse => intro _; mintro _; mspec hcontinue; simp_all; grind
+  case vc3 =>
+    intros _ h _
+    mintro _
+    mspec
+    mspec
+    simp_all
 
 section fib
 
@@ -232,10 +237,9 @@ theorem fib_triple : ⦃⌜True⌝⦄ fib_impl n ⦃⇓ r => ⌜r = fib_spec n�
   mintro _
   if h : n = 0 then simp [h] else
   simp only [h, reduceIte]
-  mspec -- Spec.pure
-  mspec Spec.forIn_range (⇓ ⟨xs, a, b⟩ => ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝) ?step
-  case step => intros; mintro _; simp_all
-  simp_all [Nat.sub_one_add_one]
+  mspec Spec.forInNew_range (fun xs (a, b) => ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝) _ _
+  case vc1 => intros; rename_i hcontinue; mintro _; mspec hcontinue; simp_all
+  case vc2 => intros; mintro _; mspec; simp_all [Nat.sub_one_add_one]
 
 theorem fib_triple_cases : ⦃⌜True⌝⦄ fib_impl n ⦃⇓ r => ⌜r = fib_spec n⌝⦄ := by
   apply fib_impl.fun_cases n _ ?case1 ?case2
@@ -243,20 +247,19 @@ theorem fib_triple_cases : ⦃⌜True⌝⦄ fib_impl n ⦃⇓ r => ⌜r = fib_sp
   intro h
   mintro -
   simp only [fib_impl, h, reduceIte]
-  mspec
-  mspec Spec.forIn_range (⇓ ⟨xs, a, b⟩ => ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝) ?step
-  case step => intros; mintro _; mspec; mspec; simp_all
-  simp_all [Nat.sub_one_add_one]
+  mspec Spec.forInNew_range (fun xs (a, b) => ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝) _ _
+  case vc1 => intros; rename_i hcontinue; mintro _; mspec hcontinue; simp_all
+  case vc2 => intros; mintro _; mspec; simp_all [Nat.sub_one_add_one]
 
 theorem fib_impl_vcs
     (Q : Nat → PostCond Nat PostShape.pure)
     (I : (n : Nat) → (_ : ¬n = 0) →
-      Invariant [1:n].toList (MProd Nat Nat) PostShape.pure)
+      InvariantNew [1:n].toList (Nat × Nat) PostShape.pure)
     (ret : ⊢ₛ (Q 0).1 0)
-    (loop_pre : ∀ n (hn : ¬n = 0), ⊢ₛ (I n hn).1 ⟨⟨[], [1:n].toList, rfl⟩, 0, 1⟩)
-    (loop_post : ∀ n (hn : ¬n = 0) r, (I n hn).1 ⟨⟨[1:n].toList, [], by simp⟩, r⟩ ⊢ₛ (Q n).1 r.2)
+    (loop_pre : ∀ n (hn : ¬n = 0), ⊢ₛ I n hn ⟨[], [1:n].toList, rfl⟩ (0, 1))
+    (loop_post : ∀ n (hn : ¬n = 0) r, I n hn ⟨[1:n].toList, [], by simp⟩ r ⊢ₛ (Q n).1 r.2)
     (loop_step : ∀ n (hn : ¬n = 0) r pref cur suff (h : [1:n].toList = pref ++ cur :: suff),
-                  (I n hn).1 ⟨⟨pref, cur::suff, by simp[h]⟩, r⟩ ⊢ₛ (I n hn).1 ⟨⟨pref ++ [cur], suff, by simp[h]⟩, r.2, r.1+r.2⟩)
+                  I n hn ⟨pref, cur::suff, by simp[h]⟩ r ⊢ₛ I n hn ⟨pref ++ [cur], suff, by simp[h]⟩ (r.2, r.1+r.2))
     : ⊢ₛ wp⟦fib_impl n⟧ (Q n) := by
   apply fib_impl.fun_cases n _ ?case1 ?case2
   case case1 => intro h; simp only [fib_impl, h, ↓reduceIte]; mstart; mspec
@@ -264,20 +267,18 @@ theorem fib_impl_vcs
   simp only [fib_impl, hn, ↓reduceIte]
   mstart
   mspec
-  mspec
-  case pre => exact loop_pre n hn
-  case post.success => mspec; mpure_intro; apply_rules [loop_post]
-  case step =>
-    intro _ _ _ _ h;
+  case vc3 => exact loop_pre n hn -- instantiates `?inv1` as well
+  case vc2 => intro _; mintro _; mspec; mpure_intro; apply_rules [loop_post]
+  case vc1 =>
+    intro _ _ _ _ _ _ hcontinue;
     mintro _;
-    mspec
-    mspec
+    mspec hcontinue
     mpure_intro
     apply_rules [loop_step]
 
 theorem fib_triple_vcs : ⦃⌜True⌝⦄ fib_impl n ⦃⇓ r => ⌜r = fib_spec n⌝⦄ := by
   apply fib_impl_vcs
-  case I => intro n hn; exact (⇓ ⟨xs, a, b⟩ => ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝)
+  case I => intro n hn; exact fun xs (a, b) => ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝
   case ret => mpure_intro; rfl
   case loop_pre => intros; mpure_intro; trivial
   case loop_post => simp_all [Nat.sub_one_add_one]
@@ -362,14 +363,14 @@ open Code
 theorem fib_triple : ⦃⌜True⌝⦄ fib_impl n ⦃⇓ r => ⌜r = fib_spec n⌝⦄ := by
   unfold fib_impl
   mvcgen
-  case inv1 => exact ⇓ (xs, ⟨a, b⟩) =>
+  case inv1 => exact fun xs (a, b) =>
     ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝
   all_goals simp_all +zetaDelta [Nat.sub_one_add_one]
 
 theorem fib_triple_step : ⦃⌜True⌝⦄ fib_impl n ⦃⇓ r => ⌜r = fib_spec n⌝⦄ := by
   unfold fib_impl
   mvcgen (stepLimit := some 14) -- 13 still has a wp⟦·⟧
-  case inv1 => exact ⇓ ⟨xs, a, b⟩ =>
+  case inv1 => exact fun xs (a, b) =>
     ⌜a = fib_spec xs.pos ∧ b = fib_spec (xs.pos + 1)⌝
   all_goals simp_all +zetaDelta [Nat.sub_one_add_one]
 
@@ -386,12 +387,12 @@ theorem fib_triple_erase : ⦃⌜True⌝⦄ fib_impl n ⦃⇓ r => ⌜r = fib_sp
 theorem fib_impl_vcs
     (Q : Nat → PostCond Nat PostShape.pure)
     (I : (n : Nat) → (_ : ¬n = 0) →
-      Invariant [1:n].toList (MProd Nat Nat) PostShape.pure)
+      InvariantNew [1:n].toList (Nat × Nat) PostShape.pure)
     (ret : ⊢ₛ (Q 0).1 0)
-    (loop_pre : ∀ n (hn : ¬n = 0), ⊢ₛ (I n hn).1 ⟨⟨[], [1:n].toList, rfl⟩, 0, 1⟩)
-    (loop_post : ∀ n (hn : ¬n = 0) r, (I n hn).1 ⟨⟨[1:n].toList, [], by simp⟩, r⟩ ⊢ₛ (Q n).1 r.2)
+    (loop_pre : ∀ n (hn : ¬n = 0), ⊢ₛ I n hn ⟨[], [1:n].toList, rfl⟩ (0, 1))
+    (loop_post : ∀ n (hn : ¬n = 0) r, I n hn ⟨[1:n].toList, [], by simp⟩ r ⊢ₛ (Q n).1 r.2)
     (loop_step : ∀ n (hn : ¬n = 0) r pref cur suff (h : [1:n].toList = pref ++ cur :: suff),
-                  (I n hn).1 ⟨⟨pref, cur::suff, by simp[h]⟩, r⟩ ⊢ₛ (I n hn).1 ⟨⟨pref ++ [cur], suff, by simp[h]⟩, r.2, r.1+r.2⟩)
+                  I n hn ⟨pref, cur::suff, by simp[h]⟩ r ⊢ₛ I n hn ⟨pref ++ [cur], suff, by simp[h]⟩ (r.2, r.1+r.2))
     : ⊢ₛ wp⟦fib_impl n⟧ (Q n) := by
   unfold fib_impl
   mvcgen
@@ -438,7 +439,7 @@ theorem sum_loop_spec :
   -- cf. `ByHand.sum_loop_spec`
   mintro -
   mvcgen [sum_loop]
-  case inv1 => exact (⇓ (xs, r) => ⌜r + xs.suffix.length * 5 ≤ 25⌝)
+  case inv1 => exact fun xs r => ⌜r + xs.suffix.length * 5 ≤ 25⌝
   all_goals simp_all; try grind
 
 theorem throwing_loop_spec :
@@ -447,8 +448,7 @@ theorem throwing_loop_spec :
   ⦃post⟨fun _ _ => ⌜False⌝,
         fun e s => ⌜e = 42 ∧ s = 4⌝⟩⦄ := by
   mvcgen [throwing_loop]
-  case inv1 => exact post⟨fun (xs, r) s => ⌜r ≤ 4 ∧ s = 4 ∧ r + xs.suffix.sum > 4⌝,
-                         fun e s => ⌜e = 42 ∧ s = 4⌝⟩
+  case inv1 => exact fun xs r s => ⌜r ≤ 4 ∧ s = 4 ∧ r + xs.suffix.sum > 4⌝
   all_goals mleave; try (subst_vars; grind)
 
 theorem test_loop_break :
@@ -456,7 +456,7 @@ theorem test_loop_break :
   breaking_loop
   ⦃⇓ r s => ⌜r > 4 ∧ s = 1⌝⦄ := by
   mvcgen [breaking_loop]
-  case inv1 => exact (⇓ (xs, r) s => ⌜(r ≤ 4 ∧ r = xs.prefix.sum ∨ r > 4) ∧ s = 42⌝)
+  case inv1 => exact fun xs r s => ⌜(r ≤ 4 ∧ r = xs.prefix.sum ∨ r > 4) ∧ s = 42⌝
   all_goals mleave; try grind
 
 theorem test_loop_early_return :
@@ -464,7 +464,7 @@ theorem test_loop_early_return :
   returning_loop
   ⦃⇓ r s => ⌜r = 42 ∧ s = 4⌝⦄ := by
   mvcgen [returning_loop]
-  case inv1 => exact (⇓ (xs, r) s => ⌜(r.1 = none ∧ r.2 = xs.prefix.sum ∧ r.2 ≤ 4 ∨ r.1 = some 42 ∧ r.2 > 4) ∧ s = 4⌝)
+  case inv1 => exact fun xs r s => ⌜(xs.suffix ≠ [] ∧ r = xs.prefix.sum ∧ r ≤ 4) ∧ s = 4⌝
   all_goals simp_all; try grind
 
 theorem unfold_to_expose_match_spec :
@@ -500,7 +500,7 @@ theorem test_sum :
     pure x : Id _)
   ⦃⇓r => ⌜r < 30⌝⦄ := by
   mvcgen
-  case inv1 => exact (⇓ (xs, r) => ⌜r + xs.suffix.length * 5 ≤ 25⌝)
+  case inv1 => exact fun xs r => ⌜r + xs.suffix.length * 5 ≤ 25⌝
   all_goals simp_all; try grind
 
 /--
@@ -531,10 +531,7 @@ example (p : Nat → Prop) [DecidablePred p] (n : Nat) :
   generalize h : check_all p n = x
   apply Id.of_wp_run_eq h
   mvcgen
-  case inv1 =>
-    exact Invariant.withEarlyReturn
-      (onReturn := fun ret _ => ⌜ret = false ∧ ¬ ∀ i < n, p i⌝)
-      (onContinue := fun xs _ => ⌜∀ i, i ∈ xs.prefix → p i⌝)
+  case inv1 => exact fun xs r => ⌜∀ i, i ∈ xs.prefix → p i⌝
   all_goals simp_all [-Classical.not_forall]; try grind
 
 end Automated
@@ -682,16 +679,16 @@ def max_and_sum (xs : Array Nat) : Id (Nat × Nat) := do
 theorem max_and_sum_spec (xs : Array Nat) :
     ⦃⌜∀ i, (h : i < xs.size) → xs[i] ≥ 0⌝⦄ max_and_sum xs ⦃⇓ (m, s) => ⌜s ≤ m * xs.size⌝⦄ := by
   mvcgen [max_and_sum]
-  case inv1 => exact (⇓ ⟨xs, m, s⟩ => ⌜s ≤ m * xs.pos⌝)
+  case inv1 => exact fun xs (m, s) => ⌜s ≤ m * xs.pos⌝
   all_goals simp_all
-  · rw [Nat.left_distrib]
+  · intro h;
+    rw [Nat.left_distrib]
     simp +zetaDelta only [Nat.mul_one, Nat.add_le_add_iff_right]
-    rename_i h
     apply Nat.le_trans h
     apply Nat.mul_le_mul_right
     grind
-  · rw [Nat.left_distrib]
-    grind
+  · grind
+  · grind
 
 end MaxAndSum
 
@@ -812,7 +809,7 @@ theorem subarraySum_correct {xs : Subarray Nat} : subarraySum xs = xs.toList.sum
   generalize h : subarraySum xs = r
   apply Id.of_wp_run_eq h
   mvcgen
-  case inv1 => exact ⇓⟨cursor, prefixSum⟩ => ⌜prefixSum = cursor.prefix.sum⌝
+  case inv1 => exact fun cursor prefixSum => ⌜prefixSum = cursor.prefix.sum⌝
   all_goals simp_all
 
 end Slices
@@ -844,38 +841,41 @@ theorem naive_expo_correct (x n : Nat) : naive_expo x n = x^n := by
   generalize h : naive_expo x n = r
   apply Id.of_wp_run_eq h
   mvcgen
-  case inv1 => exact ⇓⟨xs, r⟩ => ⌜r = x^xs.pos⌝
+  case inv1 => exact fun xs r => ⌜r = x^xs.pos⌝
   all_goals simp_all [Nat.pow_add_one]
 
 theorem fast_expo_correct (x n : Nat) : fast_expo x n = x^n := by
   generalize h : fast_expo x n = r
   apply Id.of_wp_run_eq h
   mvcgen
-  case inv1 => exact ⇓⟨xs, e, x', y⟩ => ⌜x' ^ e * y = x ^ n ∧ e ≤ n - xs.pos⌝
+  case inv1 => exact fun xs (x', y, e) => ⌜x' ^ e * y = x ^ n ∧ e ≤ n - xs.pos⌝
   all_goals simp_all
-  case vc1 b _ _ _ _ _ _ ih =>
-    obtain ⟨e, y, x'⟩ := b
+  case vc1 b _ _ _ _ _ _ _ =>
+    obtain ⟨x', y, e⟩ := b
     subst_vars
     grind
-  case vc2 b _ _ _ _ _ _ ih _ =>
-    obtain ⟨e, y, x'⟩ := b
+  case vc2 b _ _ _ _ _ _ _ _ =>
+    intro ih₁ _;
+    obtain ⟨x', y, e⟩ := b
     simp at *
     constructor
-    · rw [← Nat.mul_assoc, ← Nat.pow_add_one, ← ih.1]
+    · rw [← Nat.mul_assoc, ← Nat.pow_add_one, ← ih₁]
       have : e - 1 + 1 = e := by grind
       rw [this]
     · grind
-  case vc3 b _ _ _ _ _ _ ih _ =>
-    obtain ⟨e, y, x'⟩ := b
+  case vc3 b _ _ _ _ _ _ _ _ =>
+    intro ih₁ _;
+    obtain ⟨x', y, e⟩ := b
     simp at *
     constructor
     · rw [← Nat.pow_two, ← Nat.pow_mul]
       grind
     · grind
-  case vc5 b ih =>
-    obtain ⟨e, y, x'⟩ := b
+  case vc4 b =>
+    intro ih₁ ih₂;
+    obtain ⟨x', y, e⟩ := b
     simp at *
-    rw [← ih.1, ih.2, Nat.pow_zero, Nat.one_mul]
+    rw [← ih₁, ih₂, Nat.pow_zero, Nat.one_mul]
 
 theorem same_func (x n : Nat) : fast_expo x n = naive_expo x n := by
   rw [naive_expo_correct, fast_expo_correct]
