@@ -256,6 +256,9 @@ instance : Std.Iterators.Finite (ForwardSliceSearcher s) Id :=
 instance : Std.IteratorCollect (ForwardSliceSearcher s) Id Id :=
   .defaultImplementation
 
+instance : Std.IteratorLoopNew (ForwardSliceSearcher s) Id Id :=
+  .defaultImplementation
+
 instance : Std.IteratorLoop (ForwardSliceSearcher s) Id Id :=
   .defaultImplementation
 
