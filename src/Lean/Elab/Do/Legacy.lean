@@ -1621,10 +1621,11 @@ mutual
   /-- Generate `CodeBlock` for `doMatch; doElems` -/
   partial def doMatchToCode (doMatch : Syntax) (doElems: List Syntax) : M CodeBlock := do
     let ref       := doMatch
-    let genParam  := doMatch[1]
-    let optMotive := doMatch[2]
-    let discrs    := doMatch[3]
-    let matchAlts := doMatch[5][0].getArgs -- Array of `doMatchAlt`
+    if !doMatch[1].isNone then throwUnsupportedSyntax -- elabAsTerm is only supported by new `do` elaborator
+    let genParam  := doMatch[2]
+    let optMotive := doMatch[3]
+    let discrs    := doMatch[4]
+    let matchAlts := doMatch[6][0].getArgs -- Array of `doMatchAlt`
     let matchAlts ← matchAlts.foldlM (init := #[]) fun result matchAlt => return result ++ (expandMatchAlt matchAlt)
     let alts ←  matchAlts.mapM fun matchAlt => do
       let patterns := matchAlt[1][0]
