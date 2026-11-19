@@ -227,9 +227,19 @@ matching breaks on non-canonical instances or `let`-bound terms.
   `env.declChangeLog.size`, `env.isExporting`, and `env.header.mainModule`, refreshing `simpSlots`
   in `O(1)`), and validate dynamic local `$x` items at runtime via
   `ResolvedExprMatchRel.withLocalItems`.
-- Support **`+inst` hybrid mode** in `/structural`: `structDirectMatch` tries structural argument
-  matching first and falls back to `matchInstArgDefEq` (guarded by `isInstArgAt`), running
+- **Implement `+inst` hybrid mode and reject `-inst` on non-`/structural` engines**: in
+  `/structural`, `structDirectMatch` tries structural argument matching first and falls back to
+  `matchInstArgDefEq` (guarded by `isInstArgAt`), running
   `withNewMCtxDepth <| withTransparency .instances <| isDefEq` only on `[instImplicit]` arguments.
+  Conversely, `Meta.isDefEq` (`ExprDefEq.isDefEqArgs`) unconditionally bumps `[instImplicit]`
+  parameters to `.implicit`, and `/sym` operates on canonical `Sym` terms, so `-inst` cannot be
+  honored on `/reducible`, `/instances`, `/defeq`, or `/sym` and is rejected statically and at
+  runtime (directing callers to `/structural` for syntactic instance comparison).
+- **Unify `zeta` + `zetaDelta` and map `isDefEq` `-eta` cleanly**: `±zeta` controls both term `let`
+  expressions and local context `let` definitions (`withLocalDefItems` + `zetaDeltaSet`), with
+  per-variable control via `[±$x]`. On `isDefEq` engines, `-eta` maps to
+  `Meta.Config.etaStruct := .none` while retaining `Meta.isDefEq`'s built-in `λ`-eta and `Nat`/unit
+  theories; `/structural` toggles `λ`-eta directly via `ctx.flags.eta`.
 - Precompute structural fast paths in `ExprPattern.compile`:
   - `PatHeadGuard` + `fastRejectStructural`: `O(1)` root head+arity rejection before allocating
     `StructState` when `!rel.hasUnfolding`, no unfold items, and tracing is off.
@@ -410,7 +420,9 @@ elaboration retries, and interacts poorly with `withoutModifyingEnv` and paralle
    `.olean` persistence hooks and cross-stage/module serialization plumbing.
 
 **Consequences & Trade-offs:**
-- Zero extra `Environment` declarations, clean retry/module isolation, fast kernel checking (one
+- Zero extra environment constants, clean retry/async/module-system isolation (verified under
+  `module` with `public meta`, `private meta`, and `meta section` in `exprQuotMatchModule.lean`,
+  `exprQuotMatchPrivateModule.lean`, and `exprQuotBuildModule.lean`), fast kernel checking (one
   string literal per pattern/template), and automatic once-per-process hoisting by `extractClosed`.
 - **Candid upstream trade-off**: the self-contained codec (`src/Lean/Meta/ExprPattern.lean`, ~690
   lines) adds maintenance surface and a small one-time decode cost at module initialization
@@ -503,6 +515,12 @@ diverging from `Meta.isDefEq` and breaking nonlinear structural patterns such as
 `(∀ x, ?P x) ∧ ($P 0)`.
 
 **Decision:**
+- In `elabExprQuotHoleApp` ([ExprQuot.lean](../../src/Lean/Elab/ExprQuot.lean)), enforce
+  compile-time Miller-pattern checking on binder applications whose arguments mention
+  pattern-bound variables (rejecting non-Miller forms such as `?P (x + 1)`, `?P x x`, or
+  `?P x 0` while allowing `$fn` pins and first-order `?f ?a` applications with no bound-variable
+  arguments, and classifying `firstOrder` accurately in `#check_pattern`). This prevents silent
+  cross-engine divergence between `/structural`, `/defeq`, and `/sym` on non-Miller patterns.
 - In `structAssign`, abstract the captured pattern arguments with
   `mkLambdaFVars args wrapped (etaReduce := true)`, and apply full `lamVal.eta` only when
   `ctx.flags.eta` is `true` (`pure (if ctx.flags.eta then lamVal.eta else lamVal)`).

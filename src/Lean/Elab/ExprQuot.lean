@@ -302,6 +302,7 @@ def elabExprMatchRel (relStx : Syntax) (defaultEngine : ExprMatchEngine := .stru
           let declName ← realizeGlobalConstNoOverloadWithInfo id
           items := items.push { positive, declName, isSimpSet := false }
   let mut flags : ExprMatchFlags := {}
+  let mut instNegStx? : Option Syntax := none
   for flagStx in relStx[2].getArgs do
     let val := flagStx.isOfKind ``exprQuotFlagPos
     let flagName := flagStx[1].getId.eraseMacroScopes
@@ -309,7 +310,9 @@ def elabExprMatchRel (relStx : Syntax) (defaultEngine : ExprMatchEngine := .stru
       throwErrorAt flagStx
         "expr quotation `/sym` relation does not support disabling `-{flagName}`"
     match flagName with
-    | `inst => flags := { flags with inst := some val }
+    | `inst =>
+      flags := { flags with inst := some val }
+      instNegStx? := if val then none else some flagStx
     | `beta => flags := { flags with beta := some val }
     | `zeta => flags := { flags with zeta := some val }
     | `proj => flags := { flags with proj := some val }
@@ -318,6 +321,17 @@ def elabExprMatchRel (relStx : Syntax) (defaultEngine : ExprMatchEngine := .stru
       throwErrorAt flagStx[1]
         "unknown expr quotation flag `{flagName}`; \
          expected `inst`, `beta`, `zeta`, `proj`, or `eta`"
+  if engine != .structural && engine != .sym then
+    if let some badStx := instNegStx? then
+      let engStr := match engine with
+        | .structural => "structural"
+        | .reducible  => "reducible"
+        | .instances  => "instances"
+        | .defeq      => "defeq"
+        | .sym        => "sym"
+      throwErrorAt badStx
+        "expr quotation `/{engStr}` relation does not support disabling `-inst`; \
+         use `/structural` for syntactic instance comparison"
   let rel : ExprMatchRel := { engine, items, flags }
   let _ ← rel.resolveStatic
   return (rel, localItems)
@@ -490,14 +504,15 @@ private def mkPlaceholderSyntax (ref : Syntax) (idx : Nat) : Syntax :=
   mkNode ``Parser.Term.elabToSyntax #[mkAtomFrom ref "elabToSyntax% ", Syntax.mkNatLit idx]
 
 private def mkHoleAppOrApp (ref : Syntax) (idx : Nat) (holeName : Name)
-    (newArgs : Array Syntax) : Syntax :=
+    (newArgs : Array Syntax) (isBinder : Bool := false) : Syntax :=
   let ph := mkPlaceholderSyntax ref idx
   let hasNamedOrEllipsis := newArgs.any fun a =>
     a.isOfKind ``Parser.Term.namedArgument || a.isOfKind ``Parser.Term.ellipsis
   if hasNamedOrEllipsis then
     mkNode ``Parser.Term.app #[ph, mkNullNode newArgs]
   else
-    mkNode ``Parser.Term.exprQuotHoleApp #[mkIdentFrom ref holeName, ph, mkNullNode newArgs]
+    let taggedName := Name.num holeName (if isBinder then 1 else 0)
+    mkNode ``Parser.Term.exprQuotHoleApp #[mkIdentFrom ref taggedName, ph, mkNullNode newArgs]
 
 private def recordPatHole (hk : PatHoleKind) :
     StateT PatPreprocessState TermElabM (Nat × Name) := do
@@ -531,7 +546,7 @@ private def preprocessAppHead (fnStx : Syntax) (numArgs : Nat)
       binderHoleIdx := s.binderHoleIdx.insert name idx
     }
     let newArgs ← elabArgs
-    return some <| mkHoleAppOrApp fnStx idx holeName newArgs
+    return some <| mkHoleAppOrApp fnStx idx holeName newArgs (isBinder := true)
   else if fnStx.isAntiquot && !fnStx.isEscapedAntiquot then
     let aqTerm := fnStx.getAntiquotTerm
     if aqTerm.isOfKind ``Parser.Term.hole then
@@ -542,9 +557,9 @@ private def preprocessAppHead (fnStx : Syntax) (numArgs : Nat)
       if let some idx := (← get).binderHoleIdx.find? name then
         let holeName := (← get).holeNames.getD idx `_pin
         modify fun s => { s with selfPins := s.selfPins.push (⟨aqTerm⟩, name) }
-        return some <| mkHoleAppOrApp fnStx idx holeName newArgs
+        return some <| mkHoleAppOrApp fnStx idx holeName newArgs (isBinder := false)
     let (idx, holeName) ← recordPatHole (.pin aqTerm numArgs aqTerm.isIdent)
-    return some <| mkHoleAppOrApp fnStx idx holeName newArgs
+    return some <| mkHoleAppOrApp fnStx idx holeName newArgs (isBinder := false)
   else
     return none
 
@@ -615,12 +630,15 @@ private def preprocessExprPatStx (stx : Syntax) : StateT PatPreprocessState Term
 termination_by sizeOf stx
 
 /--
-Elaborate a pattern hole/pin application `exprQuotHoleApp` (`?P x y` or `$fn a b`), creating a
+Elaborate a pattern hole/pin application `exprQuotHoleApp` (`?P x y` or `$fn a b`), enforcing
+Miller-pattern restrictions when a binder mentions pattern-bound variables and creating a
 synthetic-opaque hole metavariable whose type abstracts only distinct bound-variable arguments.
 -/
 @[builtin_term_elab Lean.Parser.Term.exprQuotHoleApp]
 def elabExprQuotHoleApp : TermElab := fun stx expectedType? => do
-  let holeName := stx[0].getId
+  let (holeName, isBinder) := match stx[0].getId with
+    | .num base tag => (base, tag == 1)
+    | n             => (n, false)
   let placeholder := stx[1]
   let idx := placeholder[1].isNatLit?.getD 0
   unless placeholder.isOfKind ``Parser.Term.elabToSyntax &&
@@ -633,25 +651,48 @@ def elabExprQuotHoleApp : TermElab := fun stx expectedType? => do
   let mut fvarBinders : Array Expr := #[]
   let mut seenFVars : FVarIdSet := {}
   let mut isDistinctBinder : Array Bool := #[]
-  for a in argExprs do
-    if a.isFVar then
-      let fv := a.fvarId!
+  let hasBoundVarArg := isBinder && argExprs.any (·.hasFVar)
+  for (a, aStx) in argExprs.zip argStxs do
+    if let .fvar fv := a.consumeMData then
       let decl ← fv.getDecl
-      if !decl.isLet (allowNondep := true) && !seenFVars.contains fv then
+      if seenFVars.contains fv then
+        if hasBoundVarArg then
+          throwErrorAt aStx
+            "invalid higher-order pattern `?{holeName.eraseMacroScopes}`: \
+             duplicate bound variable argument `{a}` \
+             (Miller pattern requires distinct bound variables)"
+        isDistinctBinder := isDistinctBinder.push false
+      else if !decl.isLet (allowNondep := true) || hasBoundVarArg then
         seenFVars := seenFVars.insert fv
         fvarBinders := fvarBinders.push a
         isDistinctBinder := isDistinctBinder.push true
       else
         isDistinctBinder := isDistinctBinder.push false
     else
+      if hasBoundVarArg then
+        throwErrorAt aStx
+          "invalid higher-order pattern `?{holeName.eraseMacroScopes}`: \
+           arguments mentioning pattern-bound variables must all be distinct bound variables \
+           (Miller pattern)"
       isDistinctBinder := isDistinctBinder.push false
+  let mut cdeclLCtx ← getLCtx
+  let mut convertedLet := false
+  for arg in fvarBinders do
+    let fv := arg.fvarId!
+    if let some d := cdeclLCtx.find? fv then
+      if d.isLet (allowNondep := true) then
+        cdeclLCtx := cdeclLCtx.modifyLocalDecl fv fun decl =>
+          .cdecl decl.index decl.fvarId decl.userName decl.type .default decl.kind
+        convertedLet := true
+  let withBinderLCtx {α : Type} (k : TermElabM α) : TermElabM α :=
+    if convertedLet then withLCtx' cdeclLCtx k else k
   let mut pTy ←
     if fvarBinders.isEmpty then
       let u ← withLCtx {} {} mkFreshLevelMVar
       withLCtx {} {} <| mkFreshExprMVar (some (mkSort u))
     else
       let u ← withLCtx {} {} mkFreshLevelMVar
-      let retTyFunTy ← mkForallFVars fvarBinders (mkSort u)
+      let retTyFunTy ← withBinderLCtx <| mkForallFVars fvarBinders (mkSort u)
       if retTyFunTy.hasFVar then
         throwError "pattern hole cannot depend on bound variables not passed as arguments"
       let retTyMVar ← withLCtx {} {} <| mkFreshExprMVar (some retTyFunTy)
@@ -660,7 +701,7 @@ def elabExprQuotHoleApp : TermElab := fun stx expectedType? => do
     if h : i < argExprs.size then
       let a := argExprs[i]
       if isDistinctBinder.getD i false then
-        pTy ← mkForallFVars #[a] pTy
+        pTy ← withBinderLCtx <| mkForallFVars #[a] pTy
       else
         let aTy ← instantiateMVars (← inferType a)
         pTy ← mkArrow aTy pTy
@@ -1915,14 +1956,14 @@ private def preprocessTermAppHead (fnStx : Syntax)
   if fnStx.isOfKind ``Parser.Term.syntheticHole then
     let (idx, holeName) ← recordTermHole fnStx
     let newArgs ← elabArgs
-    return some <| mkHoleAppOrApp fnStx idx holeName newArgs
+    return some <| mkHoleAppOrApp fnStx idx holeName newArgs (isBinder := false)
   else if fnStx.isAntiquot && !fnStx.isEscapedAntiquot then
     let aqTerm := fnStx.getAntiquotTerm
     if aqTerm.isOfKind ``Parser.Term.hole then
       throwErrorAt fnStx "expected `$e` splice; use `?_` for a metavariable hole"
     let newArgs ← elabArgs
     let (idx, holeName) ← recordTermSplice aqTerm
-    return some <| mkHoleAppOrApp fnStx idx holeName newArgs
+    return some <| mkHoleAppOrApp fnStx idx holeName newArgs (isBinder := false)
   else
     return none
 
@@ -2617,7 +2658,7 @@ def inspectExprQuotPattern (ctxFVars : Array Expr) (stx : Syntax) :
     let tyFmt ← ppExpr tyExpr
     let selfCnt := prepState.selfPins.filter (·.2 == bId.getId) |>.size
     let selfNote := if selfCnt > 0 then s!", nonlinear self-pins={selfCnt}" else ""
-    let mode := if fo && arity == 0 then "first-order" else s!"higher-order arity={arity}"
+    let mode := if fo then "first-order" else s!"higher-order arity={arity}"
     return s!"?{bName} : {tyFmt} ({mode}{selfNote})"
   let mut pinLines : Array String := #[]
   pinHoleIdx := 0

@@ -37,11 +37,22 @@ unfold override list, and zero or more `±flag` overrides (`inst`, `beta`, `zeta
 
 - **`+inst` in `/structural`**: keeps matching strictly structural on ordinary subterms while
   checking instance-implicit arguments by definitional equality at `.instances` transparency.
+  `+inst` combines freely with `[items]` and other `+flags`. On `/reducible`, `/instances`,
+  `/defeq`, and `/sym`, instance-implicit comparison is always enabled and `-inst` is rejected
+  (use `/structural` for syntactic instance comparison).
 - **`[±decl, ±simpSet, ±$x]`**: rules apply left-to-right (**last wins**). Removing an unfold
   rule (`-c` or `-simp`) when neither the base engine nor an earlier `+` item unfolds it is a
   static error (or a runtime error for local `-$x`). Local `$x` (or `$(e)`) items must evaluate
   to a free variable referring to a dependent `let` declaration in the current `LocalContext`
   (non-dependent `have` declarations and ordinary hypotheses cannot be unfolded).
+- **Reduction flags (`±beta`, `±zeta`, `±proj`, `±eta`)**:
+  - `±zeta` controls **both** `let` expressions inside terms (`zeta`) and `let`-bound local
+    definitions in `LocalContext` (`zetaDelta`, overridable per variable via `[±$x]`).
+  - `+beta` steps inspected head beta-redexes via `headBeta`; `+proj` reduces inspected field
+    projections.
+  - `±eta` toggles `λ`-eta in `/structural`, whereas `-eta` on `isDefEq` engines disables
+    structure eta (`etaStruct := .none`) while keeping `Meta.isDefEq`'s `λ`-eta and built-in
+    `Nat`/unit reductions active.
 - **`/sym` restrictions**: `/sym` requires a `[MonadSym m]` monad (such as `SymM`, `GrindM`,
   `GoalM`, `Sym.Simp.SimpM`, `Sym.DSimp.DSimpM`, or `GrindTacticM` inside `sym =>` tactics). It
   rejects `[items]`, local `$x` items, and disabling `-inst`/`-beta`/`-zeta`/`-proj`/`-eta`.
@@ -75,23 +86,36 @@ unfold override list, and zero or more `±flag` overrides (`inst`, `beta`, `zeta
 
 ### Pattern Binders, Pins, and Wildcards
 
-- **Binders (`?x`)**: `?x` binds a local variable `x : Expr` on its first occurrence.
-- **Higher-order patterns (`?P x y`)**: applying a pattern variable to distinct bound variables
-  captures a lambda abstraction (for example, `?P : Nat → Nat` in `` `(expr| ∀ x : Nat, ?P x) ``).
-  Applying `P.beta #[x, y]` reconstructs the body while preserving inner lambdas under
-  `/structural` (`-eta`).
+- **Binders (`?x`)**: `?x` binds a local variable `x : Expr` on its first occurrence and never
+  captures variables bound inside the pattern (matching `∀ x, ?Q` against `∀ n, n = n` fails).
+  Repeating `?x` in the same pattern is a compile-time error; use `$x` on later occurrences.
+- **Higher-order vs. first-order patterns**: `?P x y` is higher-order when `x y` are distinct
+  pattern-bound variables, capturing a lambda abstraction (including constant functions and
+  reordered arguments such as `∀ x y, ?R y x`). Applying `P.beta #[x, y]` reconstructs the body
+  while preserving inner lambdas under `/structural` (`-eta`). Applications whose arguments
+  mention pattern-bound variables in non-Miller form (such as `?P (x + 1)`, `?P x x`, or
+  `?P x 0`) are rejected at compile time. Applications with no pattern-bound variable arguments
+  (such as `?f ?a` or `?f 0`) remain first-order.
 - **Pins (`$e` and nonlinear `$x`)**: `$e` (or `$(e)`) pins an in-scope `Expr` value evaluated
   in the enclosing context. Writing `$x` after an earlier `?x` in the same pattern creates a
-  nonlinear self-pin requiring both positions to match modulo the pattern's relation.
+  nonlinear self-pin requiring both positions to match modulo the pattern's relation. Bare
+  identifiers inside a quotation resolve statically where the quotation is written; goal locals
+  must be pinned or spliced with `$h`.
 - **Wildcards (`_` / `?_`)**: match any subterm without binding a variable; multiple `_`
-  wildcards in one pattern are independent and never unify distinct subterms.
+  wildcards in one pattern (and unresolved implicit arguments in patterns) are independent and
+  never unify distinct subterms.
 
 ### Native Control Flow
 
 `expr` quotations work directly inside Lean's native pattern-matching constructs:
 
-- `match`, `fun |`, `if let`, `let ... |`, and `do match`, including multi-column and nested
-  matches mixing ordinary constructors (e.g. `Option`, `Prod`) with `` `(expr| ...) `` patterns.
+- `match`, `fun |`, `if let`, `let ... |`, `do match`, and `module` files (`public meta`,
+  `private meta`, `meta section`), including multi-column and nested matches mixing ordinary
+  constructors (e.g. `Option`, `Prod`) with `` `(expr| ...) `` patterns. Lean matches ordinary
+  patterns first and runs quotation slots left-to-right via join points without duplicating arms.
+- **Compile-time exhaustiveness**: `match` expressions over `expr` quotations require a catch-all
+  `_` or variable arm covering quotation columns (`if let`, `let ... |`, and `for case` have
+  built-in fallbacks).
 - `match (modulo := rel) ...` (both term-mode and `do`-mode): sets a default relation for every
   `` `(expr| ...) `` pattern in the match. A per-pattern `/engine` replaces `(modulo := rel)`
   completely, while per-pattern `[items]` and `±flags` extend it.
@@ -111,11 +135,13 @@ In term position, `` `(expr[rel]| t) `` elaborates into `MetaM Expr` (or `m Expr
   application even if `f` is a lambda).
 - Preserves caller pointer sharing and leaves caller metavariables inside `$e` splices
   unassigned. Under `/sym`, results are maximally shared with kernel projections folded.
-- Checks `$e` splice types against expected types under `rel` (default `/defeq`) and synthesizes
-  splice-dependent type-class instances at runtime.
-- Turns `?h` and `?_` into fresh `.syntheticOpaque` metavariables in the caller's context on
-  each evaluation (repeated `?h` within one quotation shares one metavariable; each `?_` is
-  distinct).
+- Checks `$e` splice types against expected types under `rel` (default `/defeq`; `-inst` is
+  disallowed here as well) and synthesizes splice-dependent type-class instances at runtime.
+- **Explicit holes only (`refine` semantics)**: only explicit `?h` and `?_` become fresh
+  `.syntheticOpaque` metavariables in the caller's context on each evaluation (repeated `?h`
+  within one quotation shares one metavariable; each `?_` is distinct). Any other unresolved `_`,
+  implicit argument, universe level, or non-splice-dependent type-class instance is a compile-time
+  error at the quotation.
 - **Type-annotation performance tip**: annotating splice types concretely (for example,
   `($a : Nat) + 1` instead of untyped `$a + 1`) resolves type-class instances statically at
   compile time instead of running runtime instance synthesis on every template evaluation.

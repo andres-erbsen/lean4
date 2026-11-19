@@ -902,6 +902,12 @@ run_meta do
     items := #[{ positive := false, declName := `simp, isSimpSet := true }]
   }) "does not unfold any simp-set definitions"
 
+  for eng in [ExprMatchEngine.reducible, .instances, .defeq, .sym] do
+    checkErrContains (ExprMatchRel.resolveStatic {
+      engine := eng
+      flags := { inst := some false }
+    }) "does not support disabling `-inst`"
+
 end ResolveStaticValidation
 
 -- `ResolvedExprMatchRel.withLocalItems` validation errors and `+v/-v` cancellation.

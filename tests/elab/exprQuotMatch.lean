@@ -1861,4 +1861,196 @@ def testBoundedHOLetStructural (e : Expr) : MetaM (Option (Expr × Expr)) :=
 
 end BoundedHOEta
 
+namespace MillerPatternValidationAndEscape
+
+opaque millerPred : Nat → Prop
+
+/--
+error: invalid higher-order pattern `?P`: arguments mentioning pattern-bound variables must all be
+distinct bound variables (Miller pattern)
+-/
+#guard_msgs (whitespace := lax) in
+def rejectNonMillerApp (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(expr| ∀ x : Nat, ?P (x + 1) = (0 : Nat)) => return some P
+  | _ => return none
+
+/--
+error: invalid higher-order pattern `?P`: duplicate bound variable argument `x` (Miller pattern
+requires distinct bound variables)
+-/
+#guard_msgs (whitespace := lax) in
+def rejectNonMillerDupVar (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(expr| ∀ x : Nat, ?P x x) => return some P
+  | _ => return none
+
+/--
+error: invalid higher-order pattern `?P`: arguments mentioning pattern-bound variables must all be
+distinct bound variables (Miller pattern)
+-/
+#guard_msgs (whitespace := lax) in
+def rejectNonMillerMixedConst (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(expr| ∀ x : Nat, ?P x (0 : Nat)) => return some P
+  | _ => return none
+
+def allowSelfPinNonMiller (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(expr| (∀ x : Nat, ?P x) ∧ (∀ y : Nat, $P (y + 1))) => return some P
+  | _ => return none
+
+def matchReorderedHO (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(expr| ∀ x y : Nat, ?R y x) => return some R
+  | _ => return none
+
+def matchNoEscapeConst (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(expr| ∀ _ : Nat, ?Q) => return some Q
+  | _ => return none
+
+def matchFirstOrderUnderBinder (e : Expr) : MetaM (Option (Expr × Expr)) :=
+  match e with
+  | `(expr| ∀ _ : Nat, ?f ?a) => return some (f, a)
+  | _ => return none
+
+#guard_msgs in
+#eval show MetaM Unit from do
+  let predPlusOne ← `(expr| ∀ (y : Nat), millerPred (y + (1 : Nat)))
+  let selfPinTgt ← `(expr| (∀ (x : Nat), millerPred x) ∧ $predPlusOne)
+  check ((← allowSelfPinNonMiller selfPinTgt) == some (mkConst ``millerPred))
+    "allowSelfPinNonMiller failed"
+
+  let tgtReord ← `(expr| ∀ a b : Nat, a < b)
+  let some rCaptured ← matchReorderedHO tgtReord
+    | throwError "matchReorderedHO failed"
+  let expectedR ← `(expr| fun (b a : Nat) => a < b)
+  check (rCaptured == expectedR) "matchReorderedHO capture mismatch"
+
+  let tgtDep ← `(expr| ∀ n : Nat, n = n)
+  let tgtConst ← `(expr| ∀ n : Nat, True)
+  check (← matchNoEscapeConst tgtDep).isNone "bound var escaped into `?Q`"
+  check ((← matchNoEscapeConst tgtConst) == some (mkConst ``True))
+    "matchNoEscapeConst failed on True"
+
+  let tgtFODep ← `(expr| ∀ n : Nat, millerPred n)
+  let tgtFOConst ← `(expr| ∀ _ : Nat, millerPred (5 : Nat))
+  check (← matchFirstOrderUnderBinder tgtFODep).isNone "bound var escaped into `?f ?a`"
+  let some (fCap, aCap) ← matchFirstOrderUnderBinder tgtFOConst
+    | throwError "matchFirstOrderUnderBinder failed on constant body"
+  check (fCap == mkConst ``millerPred && aCap == (← `(expr| (5 : Nat))))
+    "matchFirstOrderUnderBinder capture mismatch"
+
+end MillerPatternValidationAndEscape
+
+section EngineAndFlagSemantics
+
+/--
+error: unknown expr quotation engine `all`; expected `structural`, `reducible`, `instances`,
+`defeq`, or `sym`
+-/
+#guard_msgs (whitespace := lax) in
+def rejectDroppedAllEngine (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr/all| ?x) => let _ := x; return true
+  | _ => return false
+
+/--
+error: expr quotation `/reducible` relation does not support disabling `-inst`; use `/structural`
+for syntactic instance comparison
+-/
+#guard_msgs (whitespace := lax) in
+def rejectReducibleNegInst (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr/reducible -inst| ?x) => let _ := x; return true
+  | _ => return false
+
+/--
+error: expr quotation `/instances` relation does not support disabling `-inst`; use `/structural`
+for syntactic instance comparison
+-/
+#guard_msgs (whitespace := lax) in
+def rejectInstancesNegInst (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr/instances -inst| ?x) => let _ := x; return true
+  | _ => return false
+
+/--
+error: expr quotation `/defeq` relation does not support disabling `-inst`; use `/structural` for
+syntactic instance comparison
+-/
+#guard_msgs (whitespace := lax) in
+def rejectDefeqNegInst (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr/defeq -inst| ?x) => let _ := x; return true
+  | _ => return false
+
+class EqModTag (α : Type) where
+  tag : Nat
+
+instance instEqModTagNat : EqModTag Nat where
+  tag := 1
+
+@[instance_reducible] def altEqModTagNat : EqModTag Nat := instEqModTagNat
+
+def wrapWithEqModTag {α : Type} [EqModTag α] (x : α) : α := x
+
+def matchModuloStructInstOverride (e : Expr) : MetaM Nat :=
+  match (modulo := +inst) e with
+  | `(expr -inst| @wrapWithEqModTag Nat _ (0 : Nat)) => return 1
+  | `(expr| @wrapWithEqModTag Nat _ (0 : Nat))       => return 2
+  | _                                                => return 0
+
+def matchCombinedStructItemsInstZeta (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr [+myDefId] +inst +zeta| @wrapWithEqModTag Nat _ (0 : Nat)) => return true
+  | _ => return false
+
+def matchContextZetaDelta (cx : Expr) (e : Expr) : MetaM (Bool × Bool × Bool) := do
+  let rStruct ← match e with
+    | `(expr/structural| (10 : Nat) + 20) => pure true
+    | _ => pure false
+  let rPlusZeta ← match e with
+    | `(expr/structural +zeta| (10 : Nat) + 20) => pure true
+    | _ => pure false
+  let rBlockedCx ← match e with
+    | `(expr/structural [-$cx] +zeta| (10 : Nat) + 20) => pure true
+    | _ => pure false
+  return (rStruct, rPlusZeta, rBlockedCx)
+
+#guard_msgs in
+#eval show MetaM Unit from do
+  let altApp := mkApp3 (mkConst ``wrapWithEqModTag) (mkConst ``Nat)
+    (mkConst ``altEqModTagNat) (mkNatLit 0)
+  check ((← matchModuloStructInstOverride altApp) == 2)
+    "match (modulo := +inst) vs `-inst` override failed"
+  let combinedApp := mkApp3 (mkConst ``wrapWithEqModTag) (mkConst ``Nat)
+    (mkConst ``altEqModTagNat) (mkLet `v (mkConst ``Nat) (mkApp (mkConst ``myDefId) (mkNatLit 0))
+      (mkBVar 0))
+  check (← matchCombinedStructItemsInstZeta combinedApp)
+    "combined `[+myDefId] +inst +zeta` match failed"
+
+  let natTy := mkConst ``Nat
+  let tenPlusTwenty := mkNatAdd (mkNatLit 10) (mkNatLit 20)
+  withLetDecl `cx natTy tenPlusTwenty fun cx => do
+    check ((← matchContextZetaDelta cx cx) == (false, true, false))
+      "context let zetaDelta / `[-$cx] +zeta` failed"
+    let termLetCx := mkLet `t natTy (mkNatLit 2) tenPlusTwenty
+    check ((← matchContextZetaDelta cx termLetCx) == (false, true, true))
+      "`[-$cx] +zeta` must still look through term `let`"
+
+  let lamSucc := mkLambda `x .default natTy (mkApp (mkConst ``Nat.succ) (mkBVar 0))
+  let structNoEta ← match lamSucc with | `(expr/structural| Nat.succ) => pure true | _ => pure false
+  let structEta ← match lamSucc with
+    | `(expr/structural +eta| Nat.succ) => pure true
+    | _ => pure false
+  let defeqNoEta ← match lamSucc with
+    | `(expr/defeq -eta| Nat.succ) => pure true
+    | _ => pure false
+  check (!structNoEta && structEta && defeqNoEta)
+    "structural vs defeq eta boundary check failed"
+
+end EngineAndFlagSemantics
+
 end ExprQuotMatchTest

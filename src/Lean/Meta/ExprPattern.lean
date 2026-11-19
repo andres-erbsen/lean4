@@ -93,7 +93,10 @@ structure ExprMatchItem where
 
 /-- Overrides for `±inst`, `±beta`, `±zeta`, `±proj`, `±eta` in an expr quotation relation. -/
 structure ExprMatchFlags where
-  /-- Override for instance-implicit argument definitional matching (`±inst`). -/
+  /--
+  Override for instance-implicit argument definitional matching (`±inst`). Defaults to `false` on
+  `.structural` (`+inst` opts in) and `true` on all other engines, where `-inst` is rejected.
+  -/
   inst : Option Bool := none
   /-- Override for beta-reduction (`±beta`). -/
   beta : Option Bool := none
@@ -107,7 +110,10 @@ structure ExprMatchFlags where
 
 /-- Resolved matching flags after applying engine defaults (no `Option`). -/
 structure ResolvedExprMatchFlags where
-  /-- Compare instance-implicit arguments via `.instances` `isDefEq` when structural fails. -/
+  /--
+  Compare instance-implicit arguments via `.instances` `isDefEq` when structural fails (`true` by
+  default on non-`.structural` engines, where `-inst` is rejected).
+  -/
   inst : Bool
   /-- Allow beta-reduction during matching. -/
   beta : Bool
@@ -151,6 +157,13 @@ class MonadSym (m : Type → Type v) where
 instance [MonadLiftT Sym.SymM m] : MonadSym m where
   liftSym x := liftM x
 
+private def engineNameStr : ExprMatchEngine → String
+  | .structural => "structural"
+  | .reducible  => "reducible"
+  | .instances  => "instances"
+  | .defeq      => "defeq"
+  | .sym        => "sym"
+
 private def validateSymFlags (flags : ResolvedExprMatchFlags) : CoreM Unit := do
   unless flags.inst do
     throwError "expr quotation `/sym` relation does not support disabling `-inst`"
@@ -163,14 +176,18 @@ private def validateSymFlags (flags : ResolvedExprMatchFlags) : CoreM Unit := do
   unless flags.eta do
     throwError "expr quotation `/sym` relation does not support disabling `-eta`"
 
-private def validateSymRelCore (rel : ExprMatchRel) (localItems : Array (Bool × Expr) := #[]) :
+private def validateRelCore (rel : ExprMatchRel) (localItems : Array (Bool × Expr) := #[]) :
     CoreM Unit := do
+  let flags := rel.resolveFlags
   if rel.engine == .sym then
     unless rel.items.isEmpty do
       throwError "expr quotation `/sym` relation does not support `[items]` unfold overrides"
     unless localItems.isEmpty do
       throwError "expr quotation `/sym` relation does not support local `$x` unfold overrides"
-    validateSymFlags rel.resolveFlags
+    validateSymFlags flags
+  else if rel.engine != .structural && !flags.inst then
+    throwError "expr quotation `/{engineNameStr rel.engine}` relation does not support disabling \
+      `-inst`; use `/structural` for syntactic instance comparison"
 
 /--
 Return `true` when `a` and `b` share the same runtime matching behavior (same engine, static
@@ -213,13 +230,16 @@ structure ResolvedExprMatchRel where
   hasUnfolding  : Bool := false
   deriving Inhabited
 
-private def validateSymResolvedRel (rel : ResolvedExprMatchRel) : CoreM Unit := do
+private def validateResolvedRel (rel : ResolvedExprMatchRel) : CoreM Unit := do
   if rel.engine == .sym then
     unless rel.itemRulesRev.isEmpty do
       throwError "expr quotation `/sym` relation does not support `[items]` unfold overrides"
     unless rel.posFVars.isEmpty && rel.negFVars.isEmpty do
       throwError "expr quotation `/sym` relation does not support local `$x` unfold overrides"
     validateSymFlags rel.flags
+  else if rel.engine != .structural && !rel.flags.inst then
+    throwError "expr quotation `/{engineNameStr rel.engine}` relation does not support disabling \
+      `-inst`; use `/structural` for syntactic instance comparison"
 
 private def simpTheoremsUnfolds (thms : SimpTheorems) (declName : Name) : Bool :=
   thms.isDeclToUnfold declName ||
@@ -245,7 +265,7 @@ private builtin_initialize resolvedRelCacheRef : IO.Ref (Std.HashMap Name Cached
 
 private def resolveStaticCore (rel : ExprMatchRel) :
     MetaM (ResolvedExprMatchRel × Array (Nat × SimpExtension × Bool)) := do
-  validateSymRelCore rel
+  validateRelCore rel
   if rel.items.isEmpty then
     return (emptyResolvedRel rel, #[])
   let env ← getEnv
@@ -305,7 +325,7 @@ without re-calling `getSimpExtension?` or re-validating constants.
 -/
 def ExprMatchRel.resolveStaticCached (siteId : Name) (rel : ExprMatchRel) :
     MetaM ResolvedExprMatchRel := do
-  validateSymRelCore rel
+  validateRelCore rel
   if rel.items.isEmpty then
     return emptyResolvedRel rel
   if siteId.isAnonymous then
@@ -365,7 +385,7 @@ the current local context; `-$x` fails if neither `+zeta` nor a prior `+$x` enab
 -/
 def ResolvedExprMatchRel.withLocalItems (r : ResolvedExprMatchRel)
     (localItems : Array (Bool × Expr)) : MetaM ResolvedExprMatchRel := do
-  validateSymResolvedRel r
+  validateResolvedRel r
   if r.engine == .sym && !localItems.isEmpty then
     throwError "expr quotation `/sym` relation does not support local `$x` unfold overrides"
   if localItems.isEmpty then
@@ -408,7 +428,7 @@ def ResolvedExprMatchRel.withLocalItems (r : ResolvedExprMatchRel)
 def ExprMatchRel.resolve (rel : ExprMatchRel)
     (localItems : Array (Bool × Expr) := #[]) (siteId : Name := .anonymous) :
     MetaM ResolvedExprMatchRel := do
-  validateSymRelCore rel localItems
+  validateRelCore rel localItems
   let r ←
     if rel.items.isEmpty then
       pure (emptyResolvedRel rel)
@@ -1621,6 +1641,7 @@ private def traceDefEqResult (p : ExprPattern) (rel : ResolvedExprMatchRel)
 
 private def matchDefEq? (p : ExprPattern) (rel : ResolvedExprMatchRel)
     (pinIdxs : Array Nat) (pins : Array Expr) (e : Expr) : MetaM (Option (Array Expr)) := do
+  validateResolvedRel rel
   let transparency := engineTransparency rel.engine
   let env ← getEnv
   let e ← instantiateMVarsIfNeeded e
@@ -2618,6 +2639,7 @@ def ExprTemplate.instantiateResolved (tmpl : ExprTemplate) (rel : ResolvedExprMa
     (splices : Array Expr) : MetaM Expr := do
   if rel.engine == .sym then
     throwError "expr quotation `/sym` requires `[MonadSym m]` (e.g. `SymM` or `GrindTacticM`)"
+  validateResolvedRel rel
   let n := tmpl.varKinds.size
   if n == 0 && tmpl.levelParams.isEmpty then
     return tmpl.lam
@@ -2855,7 +2877,7 @@ private def findFirstSymMismatch (fuel : Nat) (p : ExprPattern) (pinIdxs : Array
 
 private def matchSymCore? (siteId : Name) (p : ExprPattern) (rel : ResolvedExprMatchRel)
     (pinIdxs : Array Nat) (pins : Array Expr) (e : Expr) : Sym.SymM (Option (Array Expr)) := do
-  validateSymResolvedRel rel
+  validateResolvedRel rel
   let symPat ← getOrMkSymPattern siteId p
   let e ← ensureSymExpr e
   let traceEnabled ← isTracingEnabledFor `Meta.Match.expr
@@ -2907,7 +2929,7 @@ unresolved instances or fresh temporary metavariables.
 def ExprPattern.matchSym? (p : ExprPattern) (rel : ExprMatchRel) (e : Expr)
     (pinIdxs : Array Nat := #[]) (pins : Array Expr := #[]) :
     Sym.SymM (Option (Array Expr)) := do
-  validateSymRelCore rel
+  validateRelCore rel
   matchSymCore? .anonymous p (emptyResolvedRel rel) pinIdxs pins e
 
 /--
@@ -2933,7 +2955,7 @@ def ExprPattern.matchSymSiteOrElse {m : Type → Type v} [Monad m] [MonadSym m] 
     (pinIdxs : Array Nat) (pins : Array Expr) (localItems : Array (Bool × Expr)) (e : Expr)
     (onMatch : Array Expr → m α) (onFail : Unit → m α) : m α := do
   let res? ← MonadSym.liftSym do
-    validateSymRelCore rel localItems
+    validateRelCore rel localItems
     matchSymCore? siteId p (emptyResolvedRel rel) pinIdxs pins e
   match res? with
   | some xs => onMatch xs
@@ -2958,7 +2980,7 @@ private def synthSymTCWithError (tcMV : MVarId) (tcTy : Expr) : Sym.SymM Unit :=
 
 private def instantiateSymCore (siteId : Name) (tmpl : ExprTemplate)
     (rel : ResolvedExprMatchRel) (splices : Array Expr) : Sym.SymM Expr := do
-  validateSymResolvedRel rel
+  validateResolvedRel rel
   let lamShared ← getOrMkSymTemplate siteId tmpl
   let n := tmpl.varKinds.size
   if n == 0 && tmpl.levelParams.isEmpty then
@@ -3064,7 +3086,7 @@ def ExprTemplate.instantiateSymSite {m : Type → Type v} [Monad m] [MonadSym m]
     (siteId : Name) (tmpl : ExprTemplate) (rel : ExprMatchRel)
     (splices : Array Expr) (localItems : Array (Bool × Expr) := #[]) : m Expr :=
   MonadSym.liftSym do
-    validateSymRelCore rel localItems
+    validateRelCore rel localItems
     instantiateSymCore siteId tmpl (emptyResolvedRel rel) splices
 
 /-! ## Shared-relation `DiscrTree` match dispatch -/
@@ -3638,7 +3660,7 @@ private def getOrMkSymIndex (siteId : Name) (pats : Array ExprPattern) :
 
 private def matchSymIndexedCandidates (siteId : Name) (pats : Array ExprPattern)
     (rel : ResolvedExprMatchRel) (scrutinee : Expr) : Sym.SymM (Array Nat × Expr) := do
-  validateSymResolvedRel rel
+  validateResolvedRel rel
   let tree ← getOrMkSymIndex siteId pats
   let e ← ensureSymExpr scrutinee
   let cands ← symDiscrTreeGetMatch tree e

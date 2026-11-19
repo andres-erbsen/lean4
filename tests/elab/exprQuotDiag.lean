@@ -84,6 +84,43 @@ indexing: eligible (DiscrTree keys: [◾])
 
 end CheckPatternHigherOrderBinder
 
+section CheckPatternFirstOrderApp
+
+/--
+info: pattern: ?f ?a
+relation: structural [-inst, -beta, -zeta, -proj, -eta] (items: none)
+binders: ?f : _ → _ (first-order), ?a : _ (first-order)
+pins: none
+wildcards:
+  var #0 : Sort u_1 [explicit `_` / implicit; not captured]
+  var #1 : Sort u_2 [explicit `_` / implicit; not captured]
+fixed instances: none
+polymorphic instances: none
+universe params: u_1, u_2
+closed proofs: none
+indexing: eligible (DiscrTree keys: [*])
+-/
+#guard_msgs (whitespace := lax) in
+#check_pattern `(expr| ?f ?a)
+
+/--
+info: pattern: ?f 0
+relation: structural [-inst, -beta, -zeta, -proj, -eta] (items: none)
+binders: ?f : Nat → _ (first-order)
+pins: none
+wildcards:
+  var #0 : Sort u_1 [explicit `_` / implicit; not captured]
+fixed instances: `instOfNatNat 0` : OfNat Nat 0 (at `OfNat.ofNat` arg #2)
+polymorphic instances: none
+universe params: u_1
+closed proofs: none
+indexing: eligible (DiscrTree keys: [*])
+-/
+#guard_msgs (whitespace := lax) in
+#check_pattern `(expr| ?f (0 : Nat))
+
+end CheckPatternFirstOrderApp
+
 section CheckPatternNonlinearSelfPin
 
 /--
