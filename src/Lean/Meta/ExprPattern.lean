@@ -928,6 +928,8 @@ private def inferTypeSafe (t : Expr) : MetaM (Option Expr) := do
   catch _ => return none
 
 private def matchLevel (ctx : StructCtx) (isPat : Bool) (u₁ u₂ : Level) : StructM Bool := do
+  let u₁ ← if u₁.hasMVar then instantiateLevelMVars u₁ else pure u₁
+  let u₂ ← if u₂.hasMVar then instantiateLevelMVars u₂ else pure u₂
   let l₁ := u₁.normalize
   let l₂ := u₂.normalize
   if l₁ == l₂ && (!isPat || !levelHasPatParam ctx.pat.levelParams l₁) then
@@ -969,6 +971,7 @@ private def unfoldConstStep? (ctx : StructCtx) (t : Expr) : MetaM (Option Expr) 
   unless ctx.shouldUnfoldConst cname do return none
   let some cinfo := (← getEnv).find? cname | return none
   unless cinfo.hasValue && cinfo.levelParams.length == us.length do return none
+  let us ← if us.any Level.hasMVar then us.mapM instantiateLevelMVars else pure us
   let val ← instantiateValueLevelParams cinfo us
   return some (val.betaRev t.getAppRevArgs)
 
@@ -1214,7 +1217,7 @@ mutual
       (bound : Array Expr) (lets : Array LetEntry)
       (isPat : Bool) (isOrigPat : Bool := isPat) : StructM Bool :=
     withIncStructRecDepth do
-      let pe := pe.consumeMData
+      let pe ← resolveHeadMVar pe
       let e ← resolveHeadMVar e
       if isPat then
         if let .bvar i := pe.getAppFn then

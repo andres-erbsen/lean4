@@ -703,4 +703,96 @@ def badUndeterminedEmptyList : MetaM Expr := `(expr| [])
 
 end Q9Diagnostics
 
+/-! ## Assigned `Level.mvar` & self-pin `Expr.mvar` lazy resolution in `/structural` -/
+
+section AssignedMVarStructural
+
+-- Old behavior:
+-- 1. `matchLevel` normalized raw `Level`s without calling `instantiateLevelMVars`, so raw
+--    scrutinees containing assigned `Level.mvar`s (e.g., `LocalDecl.value` of `let l := j - 1`)
+--    failed `(expr| (?a : Nat) - ?b)` and `(expr +inst| (?a : Nat) - ?b)` with universe mismatch.
+-- 2. Nonlinear self-pins `$x` ran `structGo ctx v' rhs ... (isPat := false)` with `pe.consumeMData`
+--    only (without `resolveHeadMVar pe`), failing when `?x` captured an uninstantiated `Expr.mvar`
+--    on its first occurrence and matched an instantiated term on its second.
+-- New behavior: `matchLevel`, `unfoldConstStep?`, and `!isPat` `structGo` instantiate assigned
+-- `Level.mvar`s and head `Expr.mvar`s lazily on inspected nodes.
+
+private def polyConst.{u} (_ : Type u) (n : Nat) : Nat := n
+
+private def polyWrap.{u} {α : Type u} (x : α) (n : Nat) : Nat :=
+  (@Prod.mk Nat α n x).1
+
+set_option exprQuot.debug.checkIndex true in
+private def matchSubMultiInst (e : Expr) : MetaM (Option (Nat × Expr × Expr)) :=
+  match e with
+  | `(expr +inst| (?a : Nat) + ?b) => return some (1, a, b)
+  | `(expr +inst| (?a : Nat) - ?b) => return some (2, a, b)
+  | _                              => return none
+
+#guard_msgs in
+set_option exprQuot.debug.checkIndex true in
+run_meta do
+  withLocalDeclD `a (mkConst ``Nat) fun a =>
+  withLocalDeclD `b (mkConst ``Nat) fun b => do
+    let u0 ← mkFreshLevelMVar
+    let u1 ← mkFreshLevelMVar
+    let u2 ← mkFreshLevelMVar
+    let _ ← isLevelDefEq u0 .zero
+    let _ ← isLevelDefEq u1 .zero
+    let _ ← isLevelDefEq u2 .zero
+    let natTy := mkConst ``Nat
+    let instSub := mkApp2 (mkConst ``instHSub [u0]) natTy (mkConst ``instSubNat)
+    let rawSub := mkApp6 (mkConst ``HSub.hSub [u0, u1, u2]) natTy natTy natTy instSub a b
+    -- 1. Single-arm `/structural` with assigned `Level.mvar`s in scrutinee:
+    let singleHit ← match rawSub with
+      | `(expr| (?x : Nat) - ?y) => pure (x == a && y == b)
+      | _                        => pure false
+    assertTrue "assigned Level.mvar single-arm structural" singleHit
+    -- 2. Multi-arm `DiscrTree`-indexed `/structural +inst` with assigned `Level.mvar`s
+    --    plus nested assigned type/instance args and negative unassigned level mvar:
+    let some (2, x, y) ← matchSubMultiInst rawSub
+      | throwError "expected multi-arm +inst match on rawSub with assigned Level.mvar"
+    assertTrue "assigned Level.mvar multi-arm +inst captures" (x == a && y == b)
+    let tyMV ← mkFreshExprMVar (mkSort (.succ .zero))
+    tyMV.mvarId!.assign natTy
+    let instAdd := mkApp2 (mkConst ``instHAdd [0]) natTy (mkConst ``instAddNat)
+    let instMV ← mkFreshExprMVar (mkApp3 (mkConst ``HAdd [0, 0, 0]) natTy natTy natTy)
+    instMV.mvarId!.assign instAdd
+    let rawAddNested := mkApp6 (mkConst ``HAdd.hAdd [0, 0, 0]) tyMV tyMV tyMV instMV a b
+    let some (1, ax, ay) ← matchSubMultiInst rawAddNested
+      | throwError "expected multi-arm +inst match on @HAdd.hAdd with assigned type mvar"
+    assertTrue "assigned nested type mvar multi-arm +inst captures" (ax == a && ay == b)
+    let uFree ← mkFreshLevelMVar
+    let unassSub := mkApp6 (mkConst ``HSub.hSub [uFree, uFree, uFree])
+      natTy natTy natTy instSub a b
+    assertTrue "unassigned Level.mvar does not match" (← matchSubMultiInst unassSub).isNone
+    assertTrue "unassigned Level.mvar stays unassigned" (← instantiateLevelMVars uFree).isMVar
+    -- 3. `unfoldConstStep?` & level matching on non-zero assigned `Level.mvar` on `polyConst.{?v}`:
+    let lv1 ← mkFreshLevelMVar
+    let _ ← isLevelDefEq lv1 (.succ .zero)
+    let type0 := mkSort (.succ .zero)
+    let rawPoly := mkApp2 (mkConst ``polyConst [lv1]) type0 a
+    let polyDirect ← match rawPoly with
+      | `(expr| polyConst Type ?x) => pure (x == a)
+      | _                          => pure false
+    assertTrue "assigned Level.mvar in polyConst" polyDirect
+    let polyWrapExpr := mkApp3 (mkConst ``polyWrap [lv1]) type0 natTy a
+    let polyUnfolded ← match polyWrapExpr with
+      | `(expr [polyWrap]| (@Prod.fst Nat Type (?x, Nat))) => pure (x == a)
+      | _                                                  => pure false
+    assertTrue "assigned Level.mvar in unfoldConstStep?" polyUnfolded
+    -- 4. Nonlinear self-pin `$x` where 1st occ has assigned `Expr.mvar` + `Level.mvar` and
+    --    2nd occ has instantiated `a` + `Level.zero`:
+    let mv ← mkFreshExprMVar natTy
+    mv.mvarId!.assign a
+    let lhsRaw := mkApp6 (mkConst ``HSub.hSub [u0, u1, u2]) natTy natTy natTy instSub b mv
+    let rhsClean ← mkAppM ``HSub.hSub #[b, a]
+    let eqRaw ← mkEq lhsRaw rhsClean
+    let selfPinHit ← match eqRaw with
+      | `(expr| (?x : Nat) = $x) => pure (x == lhsRaw)
+      | _                        => pure false
+    assertTrue "nonlinear self-pin with assigned nested Expr.mvar & Level.mvar" selfPinHit
+
+end AssignedMVarStructural
+
 end ExprQuotGrillMeRegressions
