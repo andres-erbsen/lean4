@@ -19,6 +19,7 @@ import Lean.Meta.Sym.Simp.Forall
 import Lean.Meta.Tactic.Apply
 import Lean.Elab.Tactic.Location
 import Lean.Elab.SyntheticMVars
+import Lean.Elab.Tactic.FirstHyp
 namespace Lean.Elab.Tactic.Grind
 open Meta
 
@@ -160,14 +161,20 @@ public def assumption? : GrindTacticM Bool := do
   return false
 
 /--
-Runs `step` repeatedly until no unsolved goals remain. If `headBeta` is `true`, the main goal's
-target is head-beta-reduced (see `headBetaMainGoal`) before each `step`.
+Runs `step` repeatedly until no unsolved goals remain. Each iteration checks for cancellation and
+focuses only the head goal (applying `headBetaMainGoal` if `headBeta` is `true`) before prepending
+any resulting subgoals ahead of the remaining siblings.
 -/
 public def whileGoals (step : GrindTacticM Unit) (headBeta : Bool := false) :
     GrindTacticM Unit := do
-  while !(← getUnsolvedGoals).isEmpty do
+  while true do
+    let g :: gs ← getUnsolvedGoals | break
+    Core.checkSystem "Grind.whileGoals"
+    setGoals [g]
     if headBeta then headBetaMainGoal
     step
+    let subgoals ← getUnsolvedGoals
+    setGoals (subgoals ++ gs)
 
 /--
 Runs `tac` on the main goal, then runs `first` focused on the first resulting subgoal and `rest`
@@ -188,6 +195,27 @@ public def andThenSubgoals (tac : GrindTacticM Unit) (first : GrindTacticM Unit)
     acc := acc ++ (← getUnsolvedGoals)
   setGoals acc.toList
 
+def firstHypCore (f : Expr → Expr → GrindTacticM α)
+    (reverse : Bool := true) (except : List Expr := [])
+    (collectErr : Bool := false) : GrindTacticM (Option α × Option MessageData) :=
+  Term.withoutTacticIncrementality true <| Term.withoutErrToSorry <| withoutRecover do
+    (← getMainGoal).mvarId.withContext do
+      let hyps ← (Meta.localHypTypes (reverse := reverse) (except := except) :
+        MetaM (Array (Expr × Expr)))
+      let mut lastErr? : Option MessageData := none
+      for (h, ty) in hyps do
+        let s ← Grind.saveState
+        let msgsBefore ← if collectErr then (·.toArray.size) <$> Core.getMessageLog else pure 0
+        -- Use non-backtracking `Grind.tryCatch` so `MessageLog` keeps errors until restore.
+        match ← Grind.tryCatch (Except.ok <$> f h ty) (fun ex => return Except.error ex) with
+        | .ok res => return (some res, none)
+        | .error ex =>
+          if collectErr then
+            if let some msg ← Tactic.firstHypInnerError? ex msgsBefore then
+              lastErr? := some msg
+          s.restore (restoreInfo := true)
+      return (none, lastErr?)
+
 /--
 Try `f h ty` on each non-implementation-detail hypothesis `(h, ty)` of the main goal and return
 the first succeeding result `some r`.
@@ -202,27 +230,18 @@ Execution runs inside `Term.withoutTacticIncrementality true`, `Term.withoutErrT
 -/
 public def firstHyp? (f : Expr → Expr → GrindTacticM α)
     (reverse : Bool := true) (except : List Expr := []) : GrindTacticM (Option α) :=
-  Term.withoutTacticIncrementality true <| Term.withoutErrToSorry <| withoutRecover do
-    (← getMainGoal).mvarId.withContext do
-      let hyps ← (Meta.localHypTypes (reverse := reverse) (except := except) :
-        MetaM (Array (Expr × Expr)))
-      let s ← Grind.saveState
-      for (h, ty) in hyps do
-        if let some r ← Grind.tryCatch (some <$> f h ty) fun _ => do
-            s.restore (restoreInfo := true)
-            return none then
-          return some r
-      return none
+  (·.1) <$> firstHypCore f (reverse := reverse) (except := except) (collectErr := false)
 
 /--
-Like `Lean.Elab.Tactic.Grind.firstHyp?`, but throws `"firstHyp: no hypothesis matched"` if no
-hypothesis succeeds.
+Like `Lean.Elab.Tactic.Grind.firstHyp?`, but throws `"firstHyp: no hypothesis matched"` (appending
+the last non-`failure` inner error if any attempt threw one) if no hypothesis succeeds.
 -/
 public def firstHyp (f : Expr → Expr → GrindTacticM α)
     (reverse : Bool := true) (except : List Expr := []) : GrindTacticM α := do
-  match ← firstHyp? f (reverse := reverse) (except := except) with
-  | some a => return a
-  | none   => throwError "firstHyp: no hypothesis matched"
+  match ← firstHypCore f (reverse := reverse) (except := except) (collectErr := true) with
+  | (some a, _)        => return a
+  | (none, some err)   => throwError "firstHyp: no hypothesis matched (last error: {err})"
+  | (none, none)       => throwError "firstHyp: no hypothesis matched"
 
 @[builtin_grind_tactic Parser.Tactic.Grind.symApply] def evalSymApply : GrindTactic := fun stx => do
   ensureSym

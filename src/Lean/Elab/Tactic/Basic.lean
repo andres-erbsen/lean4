@@ -547,12 +547,18 @@ def withMainContext (x : TacticM α) : TacticM α := do
   (← getMainGoal).withContext x
 
 /--
-Runs `step` repeatedly until no unsolved goals remain. Each `step` is expected to make progress on
-the main goal (e.g., close it or replace it with simpler subgoals).
+Runs `step` repeatedly until no unsolved goals remain. Each iteration checks for cancellation,
+focuses only the head goal so `step` cannot accidentally observe sibling goals, and prepends any
+resulting subgoals ahead of the remaining siblings before repeating.
 -/
 def whileGoals (step : TacticM Unit) : TacticM Unit := do
-  while !(← getUnsolvedGoals).isEmpty do
+  while true do
+    let g :: gs ← getUnsolvedGoals | break
+    Core.checkSystem "Tactic.whileGoals"
+    setGoals [g]
     step
+    let subgoals ← getUnsolvedGoals
+    setGoals (subgoals ++ gs)
 
 /--
 Runs `tac` on the main goal, then runs `first` focused on the first resulting subgoal and `rest`

@@ -637,9 +637,24 @@ end GrindRollbackPartialArm
 section GrindNoMatch
 
 scoped syntax (name := testGrindNoMatch) "test_grind_first_hyp_no_match" : grind
+scoped syntax (name := testGrindFailOnly) "test_grind_first_hyp_fail_only" : grind
 
 @[grind_tactic testGrindNoMatch] def evalTestGrindNoMatch : GrindTactic := fun _ =>
   Grind.firstHyp fun _ _ => throwError "never"
+
+@[grind_tactic testGrindFailOnly] def evalTestGrindFailOnly : GrindTactic := fun _ =>
+  Grind.firstHyp fun _ _ => (failure : GrindTacticM Unit)
+
+-- Old behavior (`Q9`/`C5`): `"firstHyp: no hypothesis matched"` discarded inner `"never"`.
+-- New behavior: preserves the last non-`failure` error, while bare `failure` stays concise.
+/--
+error: firstHyp: no hypothesis matched (last error: never)
+-/
+#guard_msgs in
+example (h : Nat) : True := by
+  sym =>
+    test_grind_first_hyp_no_match
+    done
 
 /--
 error: firstHyp: no hypothesis matched
@@ -647,7 +662,7 @@ error: firstHyp: no hypothesis matched
 #guard_msgs in
 example (h : Nat) : True := by
   sym =>
-    test_grind_first_hyp_no_match
+    test_grind_first_hyp_fail_only
     done
 
 end GrindNoMatch

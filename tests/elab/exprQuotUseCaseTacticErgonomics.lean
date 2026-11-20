@@ -133,4 +133,35 @@ example (P : Prop) : (3 : Nat) = 4 → P := by refute_intros
 -- The newest hypothesis `b = true` is refuted by the *older* `¬b = true`.
 example (P : Prop) (b : Bool) : ¬b = true → (n : Nat) → b = true → P := by refute_intros
 
+/-! ## `D1`: `Tactic.whileGoals` focuses the head goal per iteration -/
+
+section WhileGoalsFocusRegression
+
+open Lean Meta Elab Tactic
+
+-- Old behavior (`Q10`/`D1`): `whileGoals` ran `step` with ALL remaining sibling goals visible
+-- in `getUnsolvedGoals`, so a `step` inspecting `(← getUnsolvedGoals).isEmpty` after closing its
+-- focused sub-branch saw `false` whenever an outer `And.intro` sibling remained queued.
+-- New behavior: `whileGoals` focuses only `[g]` during `step`, so closing that subgoal makes
+-- `(← getUnsolvedGoals).isEmpty` `true` without needing manual `focus`.
+
+example : (True ∧ True) ∧ True := by
+  run_tac
+    let seenEmptyAfterClose ← IO.mkRef 0
+    whileGoals do
+      let g ← getMainGoal
+      match ← getMainTarget with
+      | `(expr| _ ∧ _) =>
+        replaceMainGoal (← g.apply (mkConst ``And.intro))
+      | `(expr| True) =>
+        g.assign (mkConst ``True.intro)
+        replaceMainGoal []
+        if (← getUnsolvedGoals).isEmpty then
+          seenEmptyAfterClose.modify (· + 1)
+      | tgt => throwError "unexpected goal{indentExpr tgt}"
+    unless (← seenEmptyAfterClose.get) == 3 do
+      throwError "expected whileGoals to focus each of the 3 True subgoals individually"
+
+end WhileGoalsFocusRegression
+
 end TacticErgonomics

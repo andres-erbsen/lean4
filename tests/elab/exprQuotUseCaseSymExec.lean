@@ -206,4 +206,37 @@ theorem manual (b : Bool) (n : Nat) (h₂ : ¬b = true → Exec (.add 2) n (· =
     next => exec_sym
     next => exact_hyp
 
+/-! ## `D1`: `Grind.whileGoals` focuses the head goal per iteration -/
+
+section GrindWhileGoalsFocusRegression
+
+open Lean Meta Elab Lean.Elab.Tactic.Grind
+
+-- Old behavior (`Q10`/`D1`): `Grind.whileGoals` left sibling goals exposed to `step`, breaking
+-- steps that check `(← getUnsolvedGoals).isEmpty` after solving the current subgoal.
+-- New behavior: `Grind.whileGoals` focuses `[g]` per iteration and prepends `subgoals ++ gs`.
+
+scoped syntax (name := testGrindWhileFocus) "test_grind_while_focus" : grind
+
+@[grind_tactic testGrindWhileFocus] def evalTestGrindWhileFocus : GrindTactic := fun _ => do
+  let seenEmpty ← IO.mkRef 0
+  whileGoals (headBeta := true) do
+    match ← getMainTarget with
+    | `(expr/sym| _ ∧ _) =>
+      applyDecl ``And.intro
+    | `(expr/sym| True) =>
+      let g ← getMainGoal
+      g.mvarId.assign (mkConst ``True.intro)
+      replaceMainGoal []
+      if (← getUnsolvedGoals).isEmpty then
+        seenEmpty.modify (· + 1)
+    | tgt => throwError "unexpected sym goal{indentExpr tgt}"
+  unless (← seenEmpty.get) == 3 do
+    throwError "expected Grind.whileGoals to focus each of the 3 True subgoals individually"
+
+example : ((fun _ : Nat => True) 0 ∧ True) ∧ True := by
+  sym => test_grind_while_focus
+
+end GrindWhileGoalsFocusRegression
+
 end SymExecutor
