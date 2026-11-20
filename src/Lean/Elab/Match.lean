@@ -154,8 +154,10 @@ where
 
 def expandMacrosInPatterns (matchAlts : Array (MatchAltView k)) :
     TermElabM (Array (MatchAltView k)) := do
+  let shouldExpand (kind : SyntaxNodeKind) : Bool :=
+    kind != ``Parser.Term.byTactic && kind != ``Parser.Term.exprQuot
   matchAlts.mapM fun matchAlt => do
-    let patterns ← matchAlt.patterns.mapM (expandMacrosReportingDeprecated ·)
+    let patterns ← matchAlt.patterns.mapM (expandMacrosReportingDeprecated · shouldExpand)
     pure { matchAlt with patterns := patterns }
 
 private def getMatchGeneralizing? : Syntax → Option Bool

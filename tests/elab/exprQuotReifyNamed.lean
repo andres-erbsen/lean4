@@ -186,7 +186,7 @@ partial def reifySort (e : Expr) : MetaM SmtSort := do
   match ← instantiateMVars e with
   | `(expr| Bool) => return .bool
   | `(expr| Int) => return .int
-  | `(expr| (?a : Type) → (?b : Type)) => return .arr (← reifySort a) (← reifySort b)
+  | `(expr| ?a → ?b) => return .arr (← reifySort a) (← reifySort b)
   | e => throwError "named_reflect: unsupported sort{indentExpr e}"
 
 /-- Object names of Lean locals, names in scope (innermost first), combinators to unfold. -/

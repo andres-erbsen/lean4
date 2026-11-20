@@ -246,6 +246,22 @@ builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack _ =>
   stack.matches [`null, ``Lean.Parser.Term.explicitBinder, ``Lean.Parser.Term.depArrow])
 
 /--
+Object-level binders inside `` `(expr| ...) `` quotations (`(expr| ∀ x, _)`),
+keeping warnings for `?x` pattern captures and `$...` antiquotation splices.
+-/
+builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack _ =>
+  if stack[0]?.any fun (stx, _) => stx.isOfKind ``Lean.Parser.Term.syntheticHole then
+    false
+  else
+    Id.run do
+      for (stx, pos) in stack do
+        if stx.isAnyAntiquot then
+          return false
+        if stx.isOfKind ``Lean.Parser.Term.exprQuot && pos == 4 then
+          return true
+      return false)
+
+/--
 Function argument in let declaration (when `linter.unusedVariables.funArgs` is false)
 * `def foo := let x (unused : Nat) := 1; x`
 -/

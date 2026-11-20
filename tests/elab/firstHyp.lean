@@ -415,7 +415,12 @@ run_meta do
                 evalTactic (← `(tactic| exact nonexistentIdentForFirstHypTest2))
           pure false
         catch ex =>
-          pure ((← ex.toMessageData.toString) == "firstHyp: no hypothesis matched")
+          -- Old behavior (`Q9`/`C5`): threw `"firstHyp: no hypothesis matched"`,
+          -- discarding `evalTactic` errors.
+          -- New behavior: preserves the last non-`failure` error in `(last error: ...)`.
+          let s ← ex.toMessageData.toString
+          pure (s.startsWith "firstHyp: no hypothesis matched (last error: " &&
+            s.contains "Unknown identifier `nonexistentIdentForFirstHypTest2")
       let gProof ← instantiateMVars g
       let clean := !(gProof.hasSorry) && !(← g.mvarId!.isAssigned) &&
         (← Core.getMessageLog).toList.length == msgBefore
@@ -461,12 +466,21 @@ error: firstHyp: no hypothesis matched
 example : True := by
   run_tac firstHyp fun _ _ => (throwError "unreachable" : TacticM Unit)
 
+-- Old behavior (`Q9`/`C5`): `"firstHyp: no hypothesis matched"` discarded `"never succeeds"`.
+-- New behavior: preserves the last non-`failure` error, while pure `failure` stays concise.
+/--
+error: firstHyp: no hypothesis matched (last error: never succeeds)
+-/
+#guard_msgs in
+example (h : Nat) : True := by
+  run_tac firstHyp fun _ _ => (throwError "never succeeds" : TacticM Unit)
+
 /--
 error: firstHyp: no hypothesis matched
 -/
 #guard_msgs in
 example (h : Nat) : True := by
-  run_tac firstHyp fun _ _ => (throwError "never succeeds" : TacticM Unit)
+  run_tac firstHyp fun _ _ => (failure : TacticM Unit)
 
 /--
 error: No goals to be solved

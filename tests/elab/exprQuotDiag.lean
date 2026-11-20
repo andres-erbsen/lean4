@@ -189,7 +189,7 @@ end CheckPatternIneligibleLookThrough
 section CheckPatternSymRelation
 
 /--
-info: pattern: Nat.succ ?n
+info: pattern: ?n.succ
 relation: sym [+inst, +beta, +zeta, +proj, +eta] (items: none)
 binders: ?n : Nat (first-order)
 pins: none

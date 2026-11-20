@@ -81,6 +81,11 @@ inductive ExprMatchEngine where
 
 builtin_initialize registerTraceClass `Meta.Match.expr
 
+register_builtin_option exprQuot.debug.checkIndex : Bool := {
+  defValue := false
+  descr := "cross-check DiscrTree-indexed expr pattern matches against skipped linear arms"
+}
+
 /-- A static constant or simp-set item in an expr quotation relation `[items]` list. -/
 structure ExprMatchItem where
   /-- `true` to allow unfolding, `false` to block unfolding. -/
@@ -263,6 +268,24 @@ private structure CachedSiteRel where
 private builtin_initialize resolvedRelCacheRef : IO.Ref (Std.HashMap Name CachedSiteRel) ←
   IO.mkRef {}
 
+private def constKindNoUnfoldDesc? : ConstantInfo → Option String
+  | .defnInfo _   => none
+  | .thmInfo _    => some "a theorem"
+  | .ctorInfo _   => some "a constructor"
+  | .inductInfo _ => some "an inductive type"
+  | .recInfo _    => some "a recursor"
+  | .axiomInfo _  => some "an axiom"
+  | .opaqueInfo _ => some "an opaque constant"
+  | .quotInfo _   => some "a quotient primitive"
+
+/-- Validate that `declName` exists in `env` and denotes an unfoldable definition. -/
+def ExprMatchRel.validateUnfoldableConst (env : Environment) (declName : Name) : CoreM Unit := do
+  let some cinfo := env.find? declName
+    | throwError "unknown constant `{declName}` in expr match relation"
+  if let some kindDesc := constKindNoUnfoldDesc? cinfo then
+    throwError
+      "invalid relation item `{declName}`: `{declName}` is {kindDesc} and has no unfolding"
+
 private def resolveStaticCore (rel : ExprMatchRel) :
     MetaM (ResolvedExprMatchRel × Array (Nat × SimpExtension × Bool)) := do
   validateRelCore rel
@@ -288,8 +311,7 @@ private def resolveStaticCore (rel : ExprMatchRel) :
       simpSlotsFwd := simpSlotsFwd.push (rulesRev.size, ext, item.positive)
       rulesRev := rulesRev.push (item.positive, .inr thms)
     else
-      unless env.contains item.declName do
-        throwError "unknown constant `{item.declName}` in expr match relation"
+      ExprMatchRel.validateUnfoldableConst env item.declName
       if !item.positive && rel.engine == .structural then
         let inPosSimp := posSimpSets.any (simpTheoremsUnfolds · item.declName)
         unless posConsts.contains item.declName || inPosSimp do
@@ -739,8 +761,8 @@ private def substAssignedLevels (e : Expr) (patParams : List Name)
     if lvlSubst.isEmpty then e
     else e.instantiateLevelParams (lvlSubst.map (·.1)) (lvlSubst.map (·.2))
 
-private def patTracePlaceholders (p : ExprPattern) (pinIdxs : Array Nat) (pins : Array Expr) :
-    Array (Option Expr) := Id.run do
+private def fallbackTracePlaceholders (p : ExprPattern) (pinIdxs : Array Nat)
+    (pins : Array Expr) (pinLabels : Array String) : Array (Option Expr) := Id.run do
   let mut res : Array (Option Expr) := Array.emptyWithCapacity p.numVars
   let mut cur := p.lam
   for i in *...p.numVars do
@@ -748,7 +770,12 @@ private def patTracePlaceholders (p : ExprPattern) (pinIdxs : Array Nat) (pins :
     | .lam n _ b _ =>
       let e :=
         if let some pos := pinIdxs.idxOf? i then
-          pins.getD pos default
+          if hPin : pos < pins.size then
+            pins[pos]
+          else if hLbl : pos < pinLabels.size then
+            mkConst (Name.mkSimple s!"${pinLabels[pos]}")
+          else
+            mkConst `_pin
         else if p.namedIdx.contains i then
           mkConst (Name.mkSimple s!"?{n.eraseMacroScopes}")
         else
@@ -758,15 +785,61 @@ private def patTracePlaceholders (p : ExprPattern) (pinIdxs : Array Nat) (pins :
     | _ => break
   return res
 
-private def instantiatePatForTrace (p : ExprPattern) (pinIdxs : Array Nat) (pins : Array Expr)
-    (levels : Array (Option Level)) (e : Expr) : Expr :=
-  let e := substAssignedLevels e p.levelParams levels
-  let subst := patTracePlaceholders p pinIdxs pins
-  substAssigned e subst p.numVars
+private def withPatTraceEnvCore (p : ExprPattern) (pinIdxs : Array Nat) (pins : Array Expr)
+    (pinLabels : Array String) (levels : Array (Option Level))
+    (k : Array Expr → Array (Option Expr) → MetaM α) : MetaM α := do
+  let lam := substAssignedLevels p.lam p.levelParams levels
+  let outerLCtx := (← getLCtx).sanitizeNames.run' { options := (← getOptions) }
+  let outerInsts ← getLocalInstances
+  withLCtx outerLCtx outerInsts do
+    lambdaBoundedTelescope lam p.numVars fun xs _ => do
+      if xs.size != p.numVars then
+        return ← k #[] (fallbackTracePlaceholders p pinIdxs pins pinLabels)
+      let (renamedLCtx, subst) ← do
+        let mut lctx ← getLCtx
+        let mut out : Array (Option Expr) := Array.emptyWithCapacity p.numVars
+        let mut cur := lam
+        for i in *...p.numVars do
+          let some x := xs[i]? | break
+          let fv := x.fvarId!
+          match cur with
+          | .lam n _ b _ =>
+            if let some pos := pinIdxs.idxOf? i then
+              if hPin : pos < pins.size then
+                out := out.push (some pins[pos])
+              else if hLbl : pos < pinLabels.size then
+                lctx := lctx.setUserName fv (Name.mkSimple s!"${pinLabels[pos]}")
+                out := out.push (some x)
+              else
+                lctx := lctx.setUserName fv `_pin
+                out := out.push (some x)
+            else if p.namedIdx.contains i then
+              lctx := lctx.setUserName fv (Name.mkSimple s!"?{n.eraseMacroScopes}")
+              out := out.push (some x)
+            else
+              lctx := lctx.setUserName fv `_
+              out := out.push (some x)
+            cur := b
+          | _ => break
+        pure (lctx, out)
+      let curInsts ← getLocalInstances
+      withLCtx renamedLCtx curInsts <|
+        withOptions (fun o => pp.sanitizeNames.set o false) <|
+          k xs subst
+
+private def withPatTraceEnv [MonadControlT MetaM m] [Monad m]
+    (p : ExprPattern) (pinIdxs : Array Nat) (pins : Array Expr)
+    (pinLabels : Array String) (levels : Array (Option Level))
+    (k : Array Expr → Array (Option Expr) → m α) : m α :=
+  controlAt MetaM fun runInBase =>
+    withPatTraceEnvCore p pinIdxs pins pinLabels levels fun xs subst =>
+      runInBase (k xs subst)
 
 private def formatPatExpr (p : ExprPattern) (pinIdxs : Array Nat) (pins : Array Expr)
-    (levels : Array (Option Level)) (e : Expr) : MetaM Format :=
-  ppExpr (instantiatePatForTrace p pinIdxs pins levels e)
+    (levels : Array (Option Level)) (e : Expr) (pinLabels : Array String := #[]) : MetaM Format :=
+  withPatTraceEnv p pinIdxs pins pinLabels levels fun _ subst => do
+    let eLvl := substAssignedLevels e p.levelParams levels
+    ppExpr (substAssigned eLvl subst p.numVars)
 
 private def shouldUnfoldConstByRules (rulesRev : Array (Bool × Sum Name SimpTheorems))
     (declName : Name) : Bool := Id.run do
@@ -833,11 +906,13 @@ private def recordMismatch (ctx : StructCtx) (pe e : Expr) (isPat : Bool)
     (reason : String) : StructM Unit := do
   if ctx.traceEnabled && (← get).firstMismatch?.isNone then
     let st ← get
-    let patExpr :=
-      if isPat then instantiatePatForTrace ctx.pat ctx.pinIdxs ctx.pins st.levels pe
-      else pe
+    let patFmt ←
+      if isPat then
+        formatPatExpr ctx.pat ctx.pinIdxs ctx.pins st.levels pe
+      else
+        ppExpr pe
     let msg ← addMessageContext
-      m!"first mismatch:{indentExpr patExpr}\nagainst:{indentExpr e}\n({reason})"
+      m!"first mismatch:{indentD patFmt}\nagainst:{indentExpr e}\n({reason})"
     modify fun st => { st with firstMismatch? := some msg }
 
 private def withIncStructRecDepth (act : StructM α) : StructM α := fun s =>
@@ -985,6 +1060,18 @@ private def matchInstArgDefEq (ctx : StructCtx) (pa f a : Expr) : StructM Bool :
           modify fun s => { s with levels := s.levels.setIfInBounds lIdx (some lvl) }
       return true
 
+private def projMismatchHintSide? (env : Environment) (ctx : StructCtx) (app proj : Expr) :
+    Option String := do
+  let .proj structName idx _ := proj | none
+  let .const projFn _ := app.getAppFn | none
+  let some pinfo := env.getProjectionFnInfo? projFn | none
+  guard <| app.getAppNumArgs == pinfo.numParams + 1
+  let sinfo ← getStructureInfo? env structName
+  guard <| sinfo.getProjFn? idx == some projFn
+  guard <| !ctx.shouldUnfoldConst projFn
+  return s!"projection function `{projFn}` vs kernel projection; \
+    add `[{projFn}]` to match both encodings"
+
 -- Mutual structural matching can unfold definitions, beta-reduce, or project arbitrarily deeply;
 -- guarded at runtime by `withIncStructRecDepth`.
 mutual
@@ -996,7 +1083,8 @@ mutual
       if bound.isEmpty || args.size == bound.size || !rawV.hasFVar then
         return true
       let wrapped := rewrapLets rawV lets
-      if wrapped.hasAnyFVar (bound.contains <| .fvar ·) then
+      if wrapped.hasAnyFVar fun fv =>
+          bound.contains (.fvar fv) && !args.contains (.fvar fv) then
         recordMismatch ctx pe wrapped isPat "bound variable escapes pattern capture"
         return false
       return true
@@ -1091,6 +1179,13 @@ mutual
       return true
     | _, _ =>
       if pe != e then
+        if ctx.traceEnabled then
+          let env ← getEnv
+          let hint? := (projMismatchHintSide? env ctx pe e).orElse fun _ =>
+            projMismatchHintSide? env ctx e pe
+          if let some hint := hint? then
+            recordMismatch ctx pe e isPat hint
+            return false
         recordMismatch ctx pe e isPat "structural mismatch"
         return false
       return true
@@ -1286,19 +1381,19 @@ private def matchStructural? (p : ExprPattern) (rel : ResolvedExprMatchRel)
   }
   let (ok, st) ← (structGo ctx p.body e #[] #[] (isPat := true) true).run initState
   if traceEnabled then
-    let patExpr := instantiatePatForTrace p pinIdxs resolvedPins st.levels p.body
+    let patFmt ← formatPatExpr p pinIdxs resolvedPins st.levels p.body
     let eInst ← instantiateMVarsIfNeeded e
     if ok then
       trace[Meta.Match.expr]
-        "[structural] matched:{indentExpr patExpr}\nagainst:{indentExpr eInst}"
+        "[structural] matched:{indentD patFmt}\nagainst:{indentExpr eInst}"
     else
       match st.firstMismatch? with
       | some mm =>
         trace[Meta.Match.expr]
-          "[structural] failed:{indentExpr patExpr}\nagainst:{indentExpr eInst}\n{mm}"
+          "[structural] failed:{indentD patFmt}\nagainst:{indentExpr eInst}\n{mm}"
       | none =>
         trace[Meta.Match.expr]
-          "[structural] failed:{indentExpr patExpr}\nagainst:{indentExpr eInst}"
+          "[structural] failed:{indentD patFmt}\nagainst:{indentExpr eInst}"
   if !ok then
     return none
   return p.namedIdx.mapM fun i => st.vars.getD i none
@@ -1337,16 +1432,21 @@ private def withRelDefEqConfig (transparency : TransparencyMode)
     (flags : ResolvedExprMatchFlags) (withZeta withZetaDelta : Bool)
     (k : MetaM α) : MetaM α :=
   withOptions (fun opts =>
-    if !flags.proj then opts.setBool `backward.isDefEq.lazyWhnfCore false else opts) <|
+    let opts := if !flags.proj then opts.setBool `backward.isDefEq.lazyWhnfCore false else opts
+    if transparency == .reducible then
+      opts.setBool `backward.isDefEq.implicitBump false
+    else
+      opts) <|
   withConfig (fun cfg => { cfg with
     transparency
-    beta       := flags.beta
-    zeta       := withZeta
-    zetaDelta  := withZetaDelta
-    zetaHave   := withZeta
-    zetaUnused := withZeta
-    proj       := if flags.proj then .yesWithDelta else .no
-    etaStruct  := if flags.eta then .all else .none
+    unificationHints := false
+    beta             := flags.beta
+    zeta             := withZeta
+    zetaDelta        := withZetaDelta
+    zetaHave         := withZeta
+    zetaUnused       := withZeta
+    proj             := if flags.proj then .yesWithDelta else .no
+    etaStruct        := if flags.eta then .all else .none
   }) k
 
 private def runDefEqOnce (p : ExprPattern) (pinIdxs : Array Nat) (pins : Array Expr)
@@ -1567,42 +1667,52 @@ private def replaceTracePatMVars (patMVs : Array (MVarId × Expr)) (e : Expr) : 
       | .mvar mvId => (patMVs.find? (·.1 == mvId)).map (·.2)
       | _          => none
 
-private def findFirstDefEqMismatch (fuel : Nat) (patMVs : Array (MVarId × Expr))
-    (pe e : Expr) : MetaM MessageData := do
+private def findFirstDefEqMismatch (p : ExprPattern) (pinIdxs : Array Nat) (pins : Array Expr)
+    (fuel : Nat) (patMVs : Array (MVarId × Nat)) (pe e : Expr) : MetaM MessageData := do
   match fuel with
   | 0 =>
-    let pSub := replaceTracePatMVars patMVs (← instantiateMVars pe)
-    addMessageContext m!"first mismatch:{indentExpr pSub}\nagainst:{indentExpr e}\n(defeq mismatch)"
+    let patInst ← instantiateMVars pe
+    let patFmt ← withPatTraceEnv p pinIdxs pins #[] #[] fun _ subst => do
+      let pairs := patMVs.filterMap fun (mvId, idx) =>
+        (subst.getD idx none).map (mvId, ·)
+      ppExpr (replaceTracePatMVars pairs patInst)
+    addMessageContext m!"first mismatch:{indentD patFmt}\nagainst:{indentExpr e}\n(defeq mismatch)"
   | fuel + 1 =>
     let pHead := pe.consumeMData
     let eHead := e.consumeMData
     match pHead, eHead with
     | .app pf pa, .app ef ea =>
       if ← isDefEq pf ef then
-        findFirstDefEqMismatch fuel patMVs pa ea
+        findFirstDefEqMismatch p pinIdxs pins fuel patMVs pa ea
       else
-        findFirstDefEqMismatch fuel patMVs pf ef
+        findFirstDefEqMismatch p pinIdxs pins fuel patMVs pf ef
     | .forallE n pd pb _, .forallE _ ed eb _ =>
       if !(← isDefEq pd ed) then
-        findFirstDefEqMismatch fuel patMVs pd ed
+        findFirstDefEqMismatch p pinIdxs pins fuel patMVs pd ed
       else
         withLocalDeclD n ed fun y =>
-          findFirstDefEqMismatch fuel patMVs (pb.instantiate1 y) (eb.instantiate1 y)
+          findFirstDefEqMismatch p pinIdxs pins fuel patMVs
+            (pb.instantiate1 y) (eb.instantiate1 y)
     | .lam n pd pb _, .lam _ ed eb _ =>
       if !(← isDefEq pd ed) then
-        findFirstDefEqMismatch fuel patMVs pd ed
+        findFirstDefEqMismatch p pinIdxs pins fuel patMVs pd ed
       else
         withLocalDeclD n ed fun y =>
-          findFirstDefEqMismatch fuel patMVs (pb.instantiate1 y) (eb.instantiate1 y)
+          findFirstDefEqMismatch p pinIdxs pins fuel patMVs
+            (pb.instantiate1 y) (eb.instantiate1 y)
     | _, _ =>
-      let pSub := replaceTracePatMVars patMVs (← instantiateMVars pe)
+      let patInst ← instantiateMVars pe
       let eSub ← instantiateMVars e
+      let patFmt ← withPatTraceEnv p pinIdxs pins #[] #[] fun _ subst => do
+        let pairs := patMVs.filterMap fun (mvId, idx) =>
+          (subst.getD idx none).map (mvId, ·)
+        ppExpr (replaceTracePatMVars pairs patInst)
       addMessageContext
-        m!"first mismatch:{indentExpr pSub}\nagainst:{indentExpr eSub}\n(defeq mismatch)"
+        m!"first mismatch:{indentD patFmt}\nagainst:{indentExpr eSub}\n(defeq mismatch)"
 
 private def traceDefEqResult (p : ExprPattern) (rel : ResolvedExprMatchRel)
     (pinIdxs : Array Nat) (pins : Array Expr) (e : Expr) (matched : Bool) : MetaM Unit := do
-  let patExpr := instantiatePatForTrace p pinIdxs pins #[] p.body
+  let patFmt ← formatPatExpr p pinIdxs pins #[] p.body
   let eng := match rel.engine with
     | .reducible  => "reducible"
     | .instances  => "instances"
@@ -1610,16 +1720,15 @@ private def traceDefEqResult (p : ExprPattern) (rel : ResolvedExprMatchRel)
     | .structural => "structural"
     | .sym        => "sym"
   if matched then
-    trace[Meta.Match.expr] "[{eng}] matched:{indentExpr patExpr}\nagainst:{indentExpr e}"
+    trace[Meta.Match.expr] "[{eng}] matched:{indentD patFmt}\nagainst:{indentExpr e}"
     return ()
   let mmMsg ←
     withRelDefEqConfig (engineTransparency rel.engine) rel.flags rel.flags.zeta rel.flags.zeta do
       withNewMCtxDepth do
         let us ← p.levelParams.mapM fun _ => mkFreshLevelMVar
         let lam := p.lam.instantiateLevelParams p.levelParams us
-        let placeholders := patTracePlaceholders p pinIdxs pins
         let mut subst : Array Expr := Array.mkEmpty p.numVars
-        let mut patMVs : Array (MVarId × Expr) := #[]
+        let mut patMVs : Array (MVarId × Nat) := #[]
         let mut cur := lam
         for i in *...p.numVars do
           match cur with
@@ -1631,13 +1740,12 @@ private def traceDefEqResult (p : ExprPattern) (rel : ResolvedExprMatchRel)
               let uname := if p.namedIdx.contains i then n.eraseMacroScopes else `_
               let mv ← mkFreshExprMVar (some ty) (userName := uname)
               subst := subst.push mv
-              if let some ph := placeholders.getD i none then
-                patMVs := patMVs.push (mv.mvarId!, ph)
+              patMVs := patMVs.push (mv.mvarId!, i)
             cur := b
           | _ => break
         let pe := cur.instantiateRevRange 0 subst.size subst
-        findFirstDefEqMismatch 64 patMVs pe e
-  trace[Meta.Match.expr] "[{eng}] failed:{indentExpr patExpr}\nagainst:{indentExpr e}\n{mmMsg}"
+        findFirstDefEqMismatch p pinIdxs pins 64 patMVs pe e
+  trace[Meta.Match.expr] "[{eng}] failed:{indentD patFmt}\nagainst:{indentExpr e}\n{mmMsg}"
 
 private def matchDefEq? (p : ExprPattern) (rel : ResolvedExprMatchRel)
     (pinIdxs : Array Nat) (pins : Array Expr) (e : Expr) : MetaM (Option (Array Expr)) := do
@@ -1760,10 +1868,142 @@ def ExprPattern.matchOrElse {m : Type → Type v} [Monad m] [MonadLiftT MetaM m]
     (onMatch : Array Expr → m α) (onFail : Unit → m α) : m α :=
   p.matchSiteOrElse .anonymous rel pinIdxs pins localItems e onMatch onFail
 
+/--
+Run `k xs` inside `lambdaBoundedTelescope p.lam p.numVars` with local variables renamed to
+`?name` / `$label` / `_` and `pp.sanitizeNames` disabled, so `#check_pattern` and diagnostics
+pretty-print pattern expressions as well-typed terms.
+-/
+def ExprPattern.withInspectVars [MonadControlT MetaM m] [Monad m]
+    (p : ExprPattern) (pinIdxs : Array Nat := #[]) (pinLabels : Array String := #[])
+    (k : Array Expr → m α) : m α :=
+  withPatTraceEnv p pinIdxs #[] pinLabels #[] fun xs _ => k xs
+
+/--
+Pretty-print the compiled body of `p`, replacing binders/wildcards/`$pin`s with well-typed
+placeholders (using `pinLabels` when supplied by diagnostics such as `#check_pattern`).
+-/
+def ExprPattern.formatBodyWithLabels (p : ExprPattern) (pinIdxs : Array Nat := #[])
+    (pinLabels : Array String := #[]) : MetaM Format :=
+  formatPatExpr p pinIdxs #[] #[] p.body (pinLabels := pinLabels)
+
 /-- Pretty-print the compiled body of `p`, replacing binders/wildcards/`$pin`s for diagnostics. -/
 def ExprPattern.formatBody (p : ExprPattern) (pinIdxs : Array Nat := #[])
     (pins : Array Expr := #[]) : MetaM Format :=
   formatPatExpr p pinIdxs pins #[] p.body
+
+private partial def replaceCollapsedVars (p : ExprPattern)
+    (nonPinMVs : Array (MVarId × Nat)) (pinFVs : Array (FVarId × Nat)) (depth : Nat) :
+    Expr → Expr
+  | .mvar id =>
+    match nonPinMVs.find? (·.1 == id) with
+    | some (_, varIdx) => .bvar (depth + (p.numVars - 1 - varIdx))
+    | none             => .mvar id
+  | .fvar fv =>
+    match pinFVs.find? (·.1 == fv) with
+    | some (_, varIdx) => .bvar (depth + (p.numVars - 1 - varIdx))
+    | none             => .fvar fv
+  | .app f a         =>
+    .app (replaceCollapsedVars p nonPinMVs pinFVs depth f)
+      (replaceCollapsedVars p nonPinMVs pinFVs depth a)
+  | .lam n t b bi    =>
+    .lam n (replaceCollapsedVars p nonPinMVs pinFVs depth t)
+      (replaceCollapsedVars p nonPinMVs pinFVs (depth + 1) b) bi
+  | .forallE n t b bi =>
+    .forallE n (replaceCollapsedVars p nonPinMVs pinFVs depth t)
+      (replaceCollapsedVars p nonPinMVs pinFVs (depth + 1) b) bi
+  | .letE n t v b nd =>
+    .letE n (replaceCollapsedVars p nonPinMVs pinFVs depth t)
+      (replaceCollapsedVars p nonPinMVs pinFVs depth v)
+      (replaceCollapsedVars p nonPinMVs pinFVs (depth + 1) b) nd
+  | .mdata m b       => .mdata m (replaceCollapsedVars p nonPinMVs pinFVs depth b)
+  | .proj s j b      => .proj s j (replaceCollapsedVars p nonPinMVs pinFVs depth b)
+  | e                => e
+
+private def collapsedStructStep? (p : ExprPattern) (resolved : ResolvedExprMatchRel)
+    (pinIdxs : Array Nat) : MetaM (Option Expr) := do
+  unless resolved.hasUnfolding do
+    return none
+  let ctx : StructCtx := {
+    pat          := p
+    flags        := resolved.flags
+    itemRulesRev := resolved.itemRulesRev
+    posFVars     := resolved.posFVars
+    negFVars     := resolved.negFVars
+    hasUnfolding := resolved.hasUnfolding
+  }
+  let rec loop (fuel : Nat) (cur : Expr) : MetaM (Option Expr) := do
+    match fuel with
+    | 0 => return none
+    | fuel + 1 =>
+      let cur := cur.consumeMData
+      if isPatHoleOrBVar p.numVars pinIdxs cur 0 then
+        return some cur
+      if resolved.flags.beta && cur.isHeadBetaTarget then
+        return ← loop fuel cur.headBeta
+      if resolved.flags.zeta then
+        if let .letE _ _ pv pb _ := cur then
+          return ← loop fuel (pb.instantiate1 pv)
+      if resolved.flags.proj then
+        if let .proj _ i pc := cur then
+          let pc' ← reduceProjTarget ctx pc #[]
+          if let some projected ← projectCore? pc' i then
+            return ← loop fuel projected
+      if let some cur' ← unfoldConstStep? ctx cur then
+        return ← loop fuel cur'
+      return none
+  loop 64 p.body
+
+private def collapsedDefEqHead? (p : ExprPattern) (resolved : ResolvedExprMatchRel)
+    (pinIdxs : Array Nat) : MetaM (Option Expr) := do
+  let transparency := engineTransparency resolved.engine
+  withRelDefEqConfig transparency resolved.flags resolved.flags.zeta resolved.flags.zeta <|
+    withRelUnfoldRules resolved <| withNewMCtxDepth do
+      let us ← p.levelParams.mapM fun _ => mkFreshLevelMVar
+      let lam := p.lam.instantiateLevelParams p.levelParams us
+      let rec go (i : Nat) (cur : Expr) (subst : Array Expr)
+          (nonPinMVs : Array (MVarId × Nat)) (pinFVs : Array (FVarId × Nat)) :
+          MetaM (Option Expr) := do
+        if i >= p.numVars then
+          let patBody := cur.instantiateRevRange 0 subst.size subst
+          let w ← instantiateMVars (← Meta.whnf patBody)
+          let fn := w.getAppFn.consumeMData
+          if let .mvar mvId := fn then
+            if nonPinMVs.any (·.1 == mvId) then
+              return some (replaceCollapsedVars p nonPinMVs pinFVs 0 w)
+          return none
+        match cur with
+        | .lam n d b bi =>
+          let ty := d.instantiateRevRange 0 subst.size subst
+          if pinIdxs.contains i then
+            withLocalDecl n bi ty fun fv =>
+              go (i + 1) b (subst.push fv) nonPinMVs (pinFVs.push (fv.fvarId!, i))
+          else
+            let mv ← mkFreshExprMVar (some ty)
+            go (i + 1) b (subst.push mv) (nonPinMVs.push (mv.mvarId!, i)) pinFVs
+        | _ => return none
+      go 0 lam #[] #[] #[]
+
+/--
+If `p` is not syntactically a bare variable/wildcard/higher-order-application pattern, yet reduces
+at the root under relation `rel` to a pattern variable (or application headed by one), return a
+formatted normal form of that collapsed root expression.
+-/
+def ExprPattern.collapsedNormalForm? (p : ExprPattern) (rel : ExprMatchRel)
+    (pinIdxs : Array Nat := #[]) (localItems : Array (Bool × Expr) := #[])
+    (pinLabels : Array String := #[]) : MetaM (Option Format) := do
+  if isPatHoleOrBVar p.numVars pinIdxs p.body 0 then
+    return none
+  let resolved ←
+    try
+      rel.resolve localItems
+    catch _ =>
+      return none
+  let collapsed? ←
+    match resolved.engine with
+    | .structural => collapsedStructStep? p resolved pinIdxs
+    | .reducible | .instances | .defeq | .sym => collapsedDefEqHead? p resolved pinIdxs
+  collapsed?.mapM fun collapsed =>
+    formatPatExpr p pinIdxs #[] #[] collapsed (pinLabels := pinLabels)
 
 /-! ## `ExprTemplate` and Runtime Term Building -/
 
@@ -2826,13 +3066,15 @@ termination_by sizeOf pe
 private def findFirstSymMismatch (fuel : Nat) (p : ExprPattern) (pinIdxs : Array Nat)
     (pins : Array Expr) (vars : Array (Option Expr)) (pe e : Expr) :
     Sym.SymM (MessageData × Array (Option Expr)) := do
-  let mkMsg (pSub eSub : Expr) : Sym.SymM MessageData :=
+  let mkFmtMsg (pFmt : Format) (eSub : Expr) : Sym.SymM MessageData :=
+    return m!"first mismatch:{indentD pFmt}\nagainst:{indentExpr eSub}\n(sym mismatch)"
+  let mkExprMsg (pSub eSub : Expr) : Sym.SymM MessageData :=
     addMessageContext
       m!"first mismatch:{indentExpr pSub}\nagainst:{indentExpr eSub}\n(sym mismatch)"
   match fuel with
   | 0 =>
-    let pSub := instantiatePatForTrace p pinIdxs pins #[] pe
-    return (← mkMsg pSub e, vars)
+    let pFmt ← formatPatExpr p pinIdxs pins #[] pe
+    return (← mkFmtMsg pFmt e, vars)
   | fuel + 1 =>
     let pe := pe.consumeMData
     let e := (Sym.etaReduce e).consumeMData
@@ -2855,7 +3097,7 @@ private def findFirstSymMismatch (fuel : Nat) (p : ExprPattern) (pinIdxs : Array
             let pinApp := mkAppN (pins.getD pos default) pe.getAppArgs
             return ← findFirstSymMismatch fuel p pinIdxs pins vars pinApp e
       else if let some v' := vars.getD k none then
-        return (← mkMsg v' e, vars)
+        return (← mkExprMsg v' e, vars)
     match pe, e with
     | .app pf pa, .app ef ea =>
       let (okF, vars') ← symTracePrefixMatches p pinIdxs pins vars pf ef
@@ -2872,8 +3114,8 @@ private def findFirstSymMismatch (fuel : Nat) (p : ExprPattern) (pinIdxs : Array
         withLocalDeclD n ed fun y =>
           findFirstSymMismatch fuel p pinIdxs pins vars' (pb.instantiate1 y) (eb.instantiate1 y)
     | _, _ =>
-      let pSub := instantiatePatForTrace p pinIdxs pins #[] pe
-      return (← mkMsg pSub e, vars)
+      let pFmt ← formatPatExpr p pinIdxs pins #[] pe
+      return (← mkFmtMsg pFmt e, vars)
 
 private def matchSymCore? (siteId : Name) (p : ExprPattern) (rel : ResolvedExprMatchRel)
     (pinIdxs : Array Nat) (pins : Array Expr) (e : Expr) : Sym.SymM (Option (Array Expr)) := do
@@ -2883,10 +3125,10 @@ private def matchSymCore? (siteId : Name) (p : ExprPattern) (rel : ResolvedExprM
   let traceEnabled ← isTracingEnabledFor `Meta.Match.expr
   let traceFail (msg : MessageData) : Sym.SymM (Option (Array Expr)) := do
     if traceEnabled then
-      let patExpr := instantiatePatForTrace p pinIdxs pins #[] p.body
+      let patFmt ← formatPatExpr p pinIdxs pins #[] p.body
       let eInst ← instantiateMVarsIfNeeded e
       trace[Meta.Match.expr]
-        "[sym] failed:{indentExpr patExpr}\nagainst:{indentExpr eInst}\n{msg}"
+        "[sym] failed:{indentD patFmt}\nagainst:{indentExpr eInst}\n{msg}"
     return none
   let baseDepth := (← getMCtx).depth
   withNewMCtxDepth do
@@ -2915,10 +3157,10 @@ private def matchSymCore? (siteId : Name) (p : ExprPattern) (rel : ResolvedExprM
         return ← traceFail m!"fresh metavariable in captured term:{indentExpr val}"
       namedOut := namedOut.push val
     if traceEnabled then
-      let patExpr := instantiatePatForTrace p pinIdxs pins #[] p.body
+      let patFmt ← formatPatExpr p pinIdxs pins #[] p.body
       let eInst ← instantiateMVarsIfNeeded e
       trace[Meta.Match.expr]
-        "[sym] matched:{indentExpr patExpr}\nagainst:{indentExpr eInst}"
+        "[sym] matched:{indentD patFmt}\nagainst:{indentExpr eInst}"
     return some namedOut
 
 /--
@@ -3368,6 +3610,9 @@ private def structuralDiscrTreeGetMatch (mctx : MetavarContext) (fuel : Nat)
 private partial def reduceToNatLit? (e : Expr) : MetaM (Option Literal) :=
   withIncRecDepth do
     let e ← withReducible <| Meta.whnf e
+    if !e.hasFVar && !e.hasExprMVar then
+      if let some (.lit v@(.natVal _)) ← Meta.reduceNat? e then
+        return some v
     match e.getAppFn with
     | .lit v@(.natVal _) => return if e.getAppNumArgs == 0 then some v else none
     | .const ``Nat.zero _ => return if e.getAppNumArgs == 0 then some (.natVal 0) else none
@@ -3381,41 +3626,203 @@ private partial def reduceToNatLit? (e : Expr) : MetaM (Option Literal) :=
       if e.getAppNumArgs == 3 then reduceToNatLit? (e.getArg! 1) else return none
     | _ => return none
 
+private def isNatOffsetExpr (e : Expr) : MetaM Bool := do
+  if e.isAppOfArity ``Nat.succ 1 || e.isConstOf ``Nat.zero ||
+      e.isAppOfArity ``OfNat.ofNat 3 then
+    return true
+  if e.isAppOfArity ``Nat.add 2 then
+    return (← reduceToNatLit? e.appArg!).isSome
+  if e.isAppOfArity ``Add.add 4 then
+    if (← withReducible <| Meta.whnf (e.getArg! 0)).isConstOf ``Nat then
+      return (← reduceToNatLit? e.appArg!).isSome
+  if e.isAppOfArity ``HAdd.hAdd 6 then
+    if (← withReducible <| Meta.whnf (e.getArg! 1)).isConstOf ``Nat then
+      return (← reduceToNatLit? e.appArg!).isSome
+  return false
+
+private partial def isUnitLikeTypeSafe (fuel : Nat) (ty : Expr) : MetaM Bool := do
+  match fuel with
+  | 0 => return false
+  | fuel + 1 =>
+    try
+      forallTelescopeReducing (whnfType := true) ty fun _ tType => do
+        let hd := tType.getAppFn
+        let .const structName us := hd | return false
+        let some ctorVal := getNonRecStructureCtor? (← getEnv) structName | return false
+        if tType.getAppNumArgs != ctorVal.numParams then
+          return false
+        let ctorType := ctorVal.type
+          |>.instantiateLevelParams ctorVal.levelParams us
+          |>.getForallBodyMaxDepth ctorVal.numParams
+          |>.instantiateRev tType.getAppArgs
+        forallTelescope ctorType fun xs _ =>
+          xs.allM fun x => do
+            let fTy ← instantiateMVarsIfNeeded (← x.fvarId!.getType)
+            (try isProp fTy catch _ => pure false) <||> isUnitLikeTypeSafe fuel fTy
+    catch _ =>
+      return false
+
+private def isUnitLikeExprSafe (e : Expr) : MetaM Bool := do
+  let fn := e.getAppFn.consumeMData
+  if fn.isMVar || fn.isLambda || fn.isForall || fn.isSort then
+    return false
+  let some ty ← inferTypeSafe e | return false
+  isUnitLikeTypeSafe 16 ty
+
+private def isStructureCtorApp (env : Environment) (e : Expr) : Bool :=
+  match e.getAppFn with
+  | .const c _ =>
+    match env.find? c with
+    | some (.ctorInfo cv) => isNonRecStructure env cv.induct
+    | _ => false
+  | _ => false
+
+private def isTypeSafe (e : Expr) : MetaM Bool := do
+  try Meta.isType e catch _ => return false
+
+-- Terminates modulo `withIncRecDepth` on `withReducible <| Meta.whnf`.
+private partial def annotateReduciblePatForIndex (flags : ResolvedExprMatchFlags) (isRoot : Bool)
+    (e : Expr) : MetaM Expr :=
+  withIncRecDepth do
+    if DiscrTree.hasNoindexAnnotation e then
+      return e
+    let eW ← withReducible <| Meta.whnf e
+    let env ← getEnv
+    if !isRoot then
+      if eW.isMVar then
+        return e
+      if ← isProofSafe eW then
+        return DiscrTree.mkNoindexAnnotation e
+      if eW.isAppOf ``String.ofList then
+        return DiscrTree.mkNoindexAnnotation e
+      if eW.isRawNatLit || (← reduceToNatLit? eW).isSome || (← isNatOffsetExpr eW) then
+        return DiscrTree.mkNoindexAnnotation e
+      if flags.eta then
+        if eW.isLambda || isStructureCtorApp env eW || (← isUnitLikeExprSafe eW) then
+          return DiscrTree.mkNoindexAnnotation e
+    match eW with
+    | .app _ _ =>
+      let numArgs := eW.getAppNumArgs
+      let fn := eW.getAppFn
+      let finfo? ←
+        if !fn.hasLooseBVars && !fn.hasExprMVar then
+          try some <$> getFunInfoNArgs fn numArgs catch _ => pure none
+        else
+          pure none
+      let rec goArgs (i : Nat) : Expr → MetaM Expr
+        | .app pf pa => do
+          let skip ← match finfo?.bind (·.paramInfo[i]?) with
+            | some pi =>
+              if pi.isInstance then
+                pure true
+              else if pi.isImplicit || pi.isStrictImplicit then
+                not <$> isTypeSafe pa
+              else
+                pure false
+            | none => pure false
+          let pa' ← if skip then pure pa else annotateReduciblePatForIndex flags false pa
+          return mkApp (← goArgs (i - 1) pf) pa'
+        | fn =>
+          if fn.isForall || fn.isProj || fn.isMData || fn.isLet then
+            annotateReduciblePatForIndex flags false fn
+          else
+            pure fn
+      if numArgs == 0 then
+        return eW
+      else
+        goArgs (numArgs - 1) eW
+    | .forallE n d b bi =>
+      let d' ← annotateReduciblePatForIndex flags false d
+      return .forallE n d' b bi
+    | .proj s idx c =>
+      let c' ← annotateReduciblePatForIndex flags false c
+      return .proj s idx c'
+    | .mdata m b =>
+      let b' ← annotateReduciblePatForIndex flags isRoot b
+      return .mdata m b'
+    | _ => return eW
+
 private def reduciblePatKeys (rel : ResolvedExprMatchRel) (p : ExprPattern) :
     MetaM (Array DiscrTree.Key) :=
-  withRelUnfoldRules rel <| withNewMCtxDepth do
-    let us ← p.levelParams.mapM fun _ => mkFreshLevelMVar
-    let lam := if us.isEmpty then p.lam else p.lam.instantiateLevelParams p.levelParams us
-    let (doms, body) := peelTemplateLambdas p.numVars lam
-    let mut subst : Array Expr := Array.emptyWithCapacity doms.size
-    for h : i in *...doms.size do
-      let dom := doms[i].instantiateRevRange 0 subst.size subst
-      let mv ← mkFreshExprMVar (some dom) .natural
-      subst := subst.push mv
-    let patBody := body.instantiateRev subst
-    let keys ← DiscrTree.mkPath patBody
-    let patWhnf ← withReducible <| Meta.whnf patBody
-    let fnW := patWhnf.getAppFn
-    if fnW.isLambda || fnW.isSort || fnW.isMVar || fnW.isLet || fnW.isBVar then
-      return #[.star]
-    if let some lit ← reduceToNatLit? patWhnf then
-      return #[.lit lit]
-    if patWhnf.isAppOf ``Nat.succ || patWhnf.isConstOf ``Nat.zero ||
-        patWhnf.isAppOf ``OfNat.ofNat then
-      return #[.star]
-    if keys.getD 0 .star == .other then
-      return #[.star]
-    return keys
+  withRelDefEqConfig .reducible rel.flags true true <| withRelUnfoldRules rel <|
+    withNewMCtxDepth do
+      let us ← p.levelParams.mapM fun _ => mkFreshLevelMVar
+      let lam := if us.isEmpty then p.lam else p.lam.instantiateLevelParams p.levelParams us
+      let (doms, body) := peelTemplateLambdas p.numVars lam
+      let mut subst : Array Expr := Array.emptyWithCapacity doms.size
+      for h : i in *...doms.size do
+        let dom := doms[i].instantiateRevRange 0 subst.size subst
+        let mv ← mkFreshExprMVar (some dom) .natural
+        subst := subst.push mv
+      let patBody := body.instantiateRev subst
+      let patWhnf ← withReducible <| Meta.whnf patBody
+      let fnW := patWhnf.getAppFn
+      if fnW.isLambda || fnW.isSort || fnW.isMVar || fnW.isLet || fnW.isBVar then
+        return #[.star]
+      if let some lit ← reduceToNatLit? patWhnf then
+        return #[.lit lit]
+      if ← isNatOffsetExpr patWhnf then
+        return #[.star]
+      if (← isProofSafe patWhnf) || patWhnf.isAppOf ``String.ofList then
+        return #[.star]
+      if rel.flags.eta then
+        let env ← getEnv
+        if isStructureCtorApp env patWhnf || (← isUnitLikeExprSafe patWhnf) then
+          return #[.star]
+      let patAnnotated ← annotateReduciblePatForIndex rel.flags true patBody
+      if DiscrTree.hasNoindexAnnotation patAnnotated then
+        return #[.star]
+      let keys ← DiscrTree.mkPath patAnnotated
+      if keys.getD 0 .star == .other then
+        return #[.star]
+      return keys
+
+private partial def collectPatReducibilityDeps (env : Environment)
+    (resolved : ResolvedExprMatchRel) (pats : Array ExprPattern) :
+    Array (Name × ReducibilityStatus) := Id.run do
+  let mut visited : NameSet := {}
+  let mut out : Array (Name × ReducibilityStatus) := #[]
+  let mut todo : List Name := []
+  let rec pushExprConsts (e : Expr) (acc : List Name) : List Name :=
+    match e with
+    | .const c _      => c :: acc
+    | .app f a        => pushExprConsts a (pushExprConsts f acc)
+    | .lam _ d b _    => pushExprConsts b (pushExprConsts d acc)
+    | .forallE _ d b _ => pushExprConsts b (pushExprConsts d acc)
+    | .letE _ t v b _ => pushExprConsts b (pushExprConsts v (pushExprConsts t acc))
+    | .mdata _ b      => pushExprConsts b acc
+    | .proj s _ b     => s :: pushExprConsts b acc
+    | _               => acc
+  for pat in pats do
+    todo := pushExprConsts pat.lam todo
+  let mut fuel := 4096
+  while !todo.isEmpty && fuel > 0 do
+    fuel := fuel - 1
+    match todo with
+    | [] => break
+    | c :: rest =>
+      todo := rest
+      if visited.contains c then
+        continue
+      visited := visited.insert c
+      let status := getReducibilityStatusCore env c
+      out := out.push (c, status)
+      if shouldUnfoldConstByRules resolved.itemRulesRev c ||
+          (status matches .reducible | .implicitReducible) then
+        if let some (.defnInfo info) := env.find? c then
+          todo := pushExprConsts info.value todo
+  return out
 
 private structure CachedMetaIndex where
-  constGen     : Nat
-  declLogSize  : Nat
-  isExporting  : Bool
-  mainModule   : Name
-  relSpec      : ExprMatchRel
-  resolved     : ResolvedExprMatchRel
-  tree         : DiscrTree Nat
-  hasNatLitKey : Bool
+  constGen      : Nat
+  declLogSize   : Nat
+  isExporting   : Bool
+  mainModule    : Name
+  relSpec       : ExprMatchRel
+  resolved      : ResolvedExprMatchRel
+  tree          : DiscrTree Nat
+  hasNatLitKey  : Bool
+  constStatuses : Array (Name × ReducibilityStatus) := #[]
 
 private builtin_initialize metaIndexCacheRef : IO.Ref (Std.HashMap Name CachedMetaIndex) ←
   IO.mkRef {}
@@ -3427,11 +3834,14 @@ private def getOrMkMetaIndex (siteId : Name) (pats : Array ExprPattern) (rel : E
   let declLogSize := env.declChangeLog.size
   let isExporting := env.isExporting
   let mainModule := env.mainModule
-  if !siteId.isAnonymous then
+  let usesSimpSet := rel.items.any (·.isSimpSet)
+  if !siteId.isAnonymous && !usesSimpSet then
     if let some entry := (← metaIndexCacheRef.get)[siteId]? then
       if entry.constGen == constGen && entry.declLogSize == declLogSize &&
           entry.isExporting == isExporting && entry.mainModule == mainModule &&
-          entry.relSpec == rel then
+          entry.relSpec == rel &&
+          (entry.resolved.engine != .reducible ||
+            entry.constStatuses.all fun (c, st) => getReducibilityStatusCore env c == st) then
         return (entry.resolved, entry.tree, entry.hasNatLitKey)
   let resolved ← rel.resolveStaticCached (siteId ++ `_rel)
   let mut tree : DiscrTree Nat := {}
@@ -3449,11 +3859,13 @@ private def getOrMkMetaIndex (siteId : Name) (pats : Array ExprPattern) (rel : E
       tree := tree.insertKeyValue keys i
   | _ =>
     throwError "internal error: unsupported engine `{repr resolved.engine}` for `DiscrTree` index"
-  unless siteId.isAnonymous do
+  unless siteId.isAnonymous || usesSimpSet do
+    let constStatuses :=
+      if resolved.engine == .reducible then collectPatReducibilityDeps env resolved pats else #[]
     metaIndexCacheRef.modify fun m =>
       m.insert siteId {
         constGen, declLogSize, isExporting, mainModule,
-        relSpec := rel, resolved, tree, hasNatLitKey
+        relSpec := rel, resolved, tree, hasNatLitKey, constStatuses
       }
   return (resolved, tree, hasNatLitKey)
 
@@ -3476,6 +3888,14 @@ private def matchIndexedCandidates (siteId : Name) (pats : Array ExprPattern)
     | _ =>
       throwError
         "internal error: unsupported engine `{repr resolved.engine}` for `DiscrTree` index"
+  if exprQuot.debug.checkIndex.get (← getOptions) then
+    let scrut ← instantiateMVarsIfNeeded scrutinee
+    withoutModifyingMCtx <| withOptions (fun o => o.setBool `trace.Meta.Match.expr false) do
+      for h : i in *...pats.size do
+        unless cands.contains i do
+          if (← pats[i].matchResolved? resolved scrut).isSome then
+            throwError "exprQuot.debug.checkIndex: indexed dispatch skipped matching arm #{i} \
+              for:{indentExpr scrut}"
   if ← isTracingEnabledFor `Meta.Match.expr then
     let eng := if resolved.engine == .structural then "structural" else "reducible"
     let scrut ← instantiateMVarsIfNeeded scrutinee
@@ -3716,43 +4136,64 @@ def ExprTemplate.instantiate (tmpl : ExprTemplate) (rel : ExprMatchRel)
 /-! ## `ExprContext` and Goal/Expression Sources -/
 
 private inductive ExprContextFrame where
-  | appFn      (parent arg : Expr)
-  | appArg     (parent fn : Expr)
-  | lamType    (parent body : Expr)
-  | lamBody    (parent dom : Expr)
-  | forallType (parent body : Expr)
-  | forallBody (parent dom : Expr)
-  | letType    (parent val body : Expr) (nondep : Bool)
-  | letVal     (parent ty body : Expr) (nondep : Bool)
-  | letBody    (parent ty val : Expr) (nondep : Bool)
-  | mdata      (parent : Expr)
-  | proj       (parent : Expr)
+  | appFn          (parent arg : Expr)
+  | appArg         (parent fn : Expr)
+  | lamType        (parent body : Expr)
+  | lamBody        (parent dom : Expr)
+  | lamBodyFVar    (parent dom fvar : Expr)
+  | forallType     (parent body : Expr)
+  | forallBody     (parent dom : Expr)
+  | forallBodyFVar (parent dom fvar : Expr)
+  | letType        (parent val body : Expr) (nondep : Bool)
+  | letVal         (parent ty body : Expr) (nondep : Bool)
+  | letBody        (parent ty val : Expr) (nondep : Bool)
+  | letBodyFVar    (parent ty val fvar : Expr) (nondep : Bool)
+  | mdata          (parent : Expr)
+  | proj           (parent : Expr)
   deriving Inhabited
 
 /--
-Zipper-style context pointing from a closed subterm back to its enclosing root `Expr`.
+Zipper-style context pointing from a subterm back to its enclosing root `Expr`.
 Use `ExprContext.fill` to substitute a new expression into the hole while preserving unchanged
-subtrees and pointer sharing.
+subtrees and pointer sharing (automatically re-abstracting binder free variables recorded by
+`subtermsUnderBinders`), and `ExprContext.binders` to inspect enclosing opened binder fvars.
 -/
 structure ExprContext where
   private frames : List ExprContextFrame := []
   deriving Inhabited
 
-/-- Plug `replacement` into the hole represented by `ctx`, rebuilding to the root `Expr`. -/
+/--
+Return the enclosing binder free variables opened while descending to this subterm, ordered
+outermost binder first (empty for closed `subterms` and `matchDiscriminants`).
+-/
+def ExprContext.binders (ctx : ExprContext) : Array Expr :=
+  ctx.frames.foldr (init := #[]) fun frame acc =>
+    match frame with
+    | .lamBodyFVar _ _ fv | .forallBodyFVar _ _ fv | .letBodyFVar _ _ _ fv _ => acc.push fv
+    | _ => acc
+
+/--
+Plug `replacement` into the hole represented by `ctx`, rebuilding to the root `Expr` and
+re-abstracting any opened binder free variables in `.lam`/`.forallE`/`.letE` frames.
+-/
 def ExprContext.fill (ctx : ExprContext) (replacement : Expr) : Expr :=
   ctx.frames.foldl (init := replacement) fun cur frame =>
     match frame with
-    | .appFn parent arg          => parent.updateApp! cur arg
-    | .appArg parent fn          => parent.updateApp! fn cur
-    | .lamType parent body       => parent.updateLambdaE! cur body
-    | .lamBody parent dom        => parent.updateLambdaE! dom cur
-    | .forallType parent body    => parent.updateForallE! cur body
-    | .forallBody parent dom     => parent.updateForallE! dom cur
-    | .letType parent val body nd => parent.updateLet! cur val body nd
-    | .letVal parent ty body nd  => parent.updateLet! ty cur body nd
-    | .letBody parent ty val nd  => parent.updateLet! ty val cur nd
-    | .mdata parent              => parent.updateMData! cur
-    | .proj parent               => parent.updateProj! cur
+    | .appFn parent arg               => parent.updateApp! cur arg
+    | .appArg parent fn               => parent.updateApp! fn cur
+    | .lamType parent body            => parent.updateLambdaE! cur body
+    | .lamBody parent dom             => parent.updateLambdaE! dom cur
+    | .lamBodyFVar parent dom fv      => parent.updateLambdaE! dom (cur.abstract #[fv])
+    | .forallType parent body         => parent.updateForallE! cur body
+    | .forallBody parent dom          => parent.updateForallE! dom cur
+    | .forallBodyFVar parent dom fv   => parent.updateForallE! dom (cur.abstract #[fv])
+    | .letType parent val body nd     => parent.updateLet! cur val body nd
+    | .letVal parent ty body nd       => parent.updateLet! ty cur body nd
+    | .letBody parent ty val nd       => parent.updateLet! ty val cur nd
+    | .letBodyFVar parent ty val fv nd =>
+      parent.updateLet! ty val (cur.abstract #[fv]) nd
+    | .mdata parent                   => parent.updateMData! cur
+    | .proj parent                    => parent.updateProj! cur
 
 private def isExcludedFVar (except : List Expr) (fv : FVarId) : Bool :=
   except.any fun ex =>
@@ -3952,6 +4393,153 @@ def Subterms.toArray (s : Subterms) : Array (Expr × ExprContext) := Id.run do
 /-- Collect all yielded `(subterm, ctx)` pairs from `s` into a `List`. -/
 def Subterms.toList (s : Subterms) : List (Expr × ExprContext) :=
   s.toArray.toList
+
+/--
+Lazy `MetaM`-lifted stream of subterms of an `Expr`, opening `.lam`, `.forallE`, and `.letE`
+binders with `withLocalDecl` / `withLetDecl` as it descends and pairing each subterm with its
+`ExprContext` (whose `ctx.binders` lists the opened binder free variables outer-to-inner and whose
+`ctx.fill` automatically re-abstracts them). Created by `subtermsUnderBinders`.
+-/
+structure SubtermsUnderBinders where
+  /-- Root expression to inspect. -/
+  expr               : Expr
+  /--
+  Deduplicate structurally equal subterms via `ExprSet` (yielding only the first occurrence's
+  `ExprContext`). Set `false` to emit every occurrence with its own `ExprContext`.
+  -/
+  dedup              : Bool := true
+  /--
+  Emit intermediate curried `.app` prefixes (`f a₁`, …) inside multi-argument applications;
+  when `false` (default), emits full applications and visits head/arguments directly.
+  -/
+  includeAppPrefixes : Bool := false
+
+/--
+Construct a lazy outermost-first stream of subterms of `e` (including subterms under binders),
+opening each enclosing `.lam`/`.forallE`/`.letE` binder into the active `LocalContext` while its
+body is visited. Inside each `for (sub, ctx) in subtermsUnderBinders e do` iteration, `ctx.binders`
+holds the live enclosing binder free variables (outer-to-inner) and `ctx.fill repl` re-abstracts
+them automatically when rebuilding the enclosing expression.
+-/
+def subtermsUnderBinders (e : Expr) (dedup : Bool := true)
+    (includeAppPrefixes : Bool := false) : SubtermsUnderBinders :=
+  { expr := e, dedup, includeAppPrefixes }
+
+-- Structural traversal on `cur : Expr`; `partial` avoids `WellFounded.fix`/`brecOn`
+-- LCNF and code-generation overhead on every polymorphic `[Monad m]` instantiation.
+mutual
+  @[nospecialize]
+  private partial def subtermsUnderBindersVisitSpine [Monad m] [MonadControlT MetaM m]
+      [MonadLiftT MetaM m] (dedup : Bool) (visRef : IO.Ref ExprSet)
+      (f : Expr × ExprContext → β → m (ForInStep β))
+      (p : Expr) (upper : List ExprContextFrame) (acc : β) : m (ForInStep β) :=
+    match p with
+    | .app pf pa => do
+      match ← subtermsUnderBindersVisitSpine dedup visRef f pf (.appFn p pa :: upper) acc with
+      | .done b  => return .done b
+      | .yield b => subtermsUnderBindersGo dedup false visRef f pa (.appArg p pf :: upper) b
+    | fn => subtermsUnderBindersGo dedup false visRef f fn upper acc
+
+  @[nospecialize]
+  private partial def subtermsUnderBindersStepChildren [Monad m] [MonadControlT MetaM m]
+      [MonadLiftT MetaM m] (dedup includeAppPrefixes : Bool) (visRef : IO.Ref ExprSet)
+      (f : Expr × ExprContext → β → m (ForInStep β))
+      (cur : Expr) (frames : List ExprContextFrame) (curAcc : β) : m (ForInStep β) :=
+    match cur with
+    | .app f0 a => do
+      if !includeAppPrefixes then
+        match ← subtermsUnderBindersVisitSpine dedup visRef f f0
+            (.appFn cur a :: frames) curAcc with
+        | .done b  => return .done b
+        | .yield b => subtermsUnderBindersGo dedup false visRef f a (.appArg cur f0 :: frames) b
+      else
+        match ← subtermsUnderBindersGo dedup true visRef f f0 (.appFn cur a :: frames) curAcc with
+        | .done b  => return .done b
+        | .yield b => subtermsUnderBindersGo dedup true visRef f a (.appArg cur f0 :: frames) b
+    | .lam n t b bi => do
+      match ← subtermsUnderBindersGo dedup includeAppPrefixes visRef f t
+          (.lamType cur b :: frames) curAcc with
+      | .done b'  => return .done b'
+      | .yield b' =>
+        withLocalDecl n bi t fun fv =>
+          subtermsUnderBindersGo dedup includeAppPrefixes visRef f (b.instantiate1 fv)
+            (.lamBodyFVar cur t fv :: frames) b'
+    | .forallE n t b bi => do
+      match ← subtermsUnderBindersGo dedup includeAppPrefixes visRef f t
+          (.forallType cur b :: frames) curAcc with
+      | .done b'  => return .done b'
+      | .yield b' =>
+        withLocalDecl n bi t fun fv =>
+          subtermsUnderBindersGo dedup includeAppPrefixes visRef f (b.instantiate1 fv)
+            (.forallBodyFVar cur t fv :: frames) b'
+    | .letE n t v b nd => do
+      match ← subtermsUnderBindersGo dedup includeAppPrefixes visRef f t
+          (.letType cur v b nd :: frames) curAcc with
+      | .done b'  => return .done b'
+      | .yield b' =>
+        match ← subtermsUnderBindersGo dedup includeAppPrefixes visRef f v
+            (.letVal cur t b nd :: frames) b' with
+        | .done b''  => return .done b''
+        | .yield b'' =>
+          withLetDecl n t v (nondep := nd) fun fv =>
+            subtermsUnderBindersGo dedup includeAppPrefixes visRef f (b.instantiate1 fv)
+              (.letBodyFVar cur t v fv nd :: frames) b''
+    | .proj _ _ b =>
+      subtermsUnderBindersGo dedup includeAppPrefixes visRef f b (.proj cur :: frames) curAcc
+    | _ => pure (.yield curAcc)
+
+  @[nospecialize]
+  private partial def subtermsUnderBindersGo [Monad m] [MonadControlT MetaM m]
+      [MonadLiftT MetaM m] (dedup includeAppPrefixes : Bool) (visRef : IO.Ref ExprSet)
+      (f : Expr × ExprContext → β → m (ForInStep β))
+      (cur : Expr) (frames : List ExprContextFrame) (acc : β) : m (ForInStep β) :=
+    match cur with
+    | .mdata _ b =>
+      subtermsUnderBindersGo dedup includeAppPrefixes visRef f b (.mdata cur :: frames) acc
+    | cur => do
+      if dedup then
+        if (← liftM (visRef.get : MetaM ExprSet)).contains cur then
+          return .yield acc
+        liftM (visRef.modify (·.insert cur) : MetaM Unit)
+      let mut curAcc := acc
+      if !cur.hasLooseBVars then
+        match ← f (cur, { frames }) curAcc with
+        | .done b  => return .done b
+        | .yield b => curAcc := b
+      subtermsUnderBindersStepChildren dedup includeAppPrefixes visRef f cur frames curAcc
+end
+
+/-- Iterate over `(subterm, ctx)` pairs in `s` within opened binder `LocalContext`s. -/
+@[nospecialize]
+def SubtermsUnderBinders.forIn [Monad m] [MonadControlT MetaM m] [MonadLiftT MetaM m]
+    (s : SubtermsUnderBinders) (init : β)
+    (f : Expr × ExprContext → β → m (ForInStep β)) : m β := do
+  let visRef ← liftM (IO.mkRef ({} : ExprSet) : MetaM (IO.Ref ExprSet))
+  let step ← subtermsUnderBindersGo s.dedup s.includeAppPrefixes visRef f s.expr [] init
+  return match step with
+    | .done b | .yield b => b
+
+@[nospecialize]
+instance instForInSubtermsUnderBindersProdExprExprContext [Monad m] [MonadControlT MetaM m]
+    [MonadLiftT MetaM m] : ForIn m SubtermsUnderBinders (Expr × ExprContext) where
+  forIn := SubtermsUnderBinders.forIn
+
+/--
+Collect all yielded `(subterm, ctx)` pairs from `s` into an `Array`.
+Note: prefer `for ... in subtermsUnderBinders e do` when inspecting `sub` with `MetaM` operations,
+since `.toArray` exits the `withLocalDecl` scopes that bind `ctx.binders`.
+-/
+def SubtermsUnderBinders.toArray (s : SubtermsUnderBinders) :
+    MetaM (Array (Expr × ExprContext)) := do
+  let mut acc : Array (Expr × ExprContext) := #[]
+  for item in s do
+    acc := acc.push item
+  return acc
+
+/-- Collect all yielded `(subterm, ctx)` pairs from `s` into a `List`. -/
+def SubtermsUnderBinders.toList (s : SubtermsUnderBinders) :
+    MetaM (List (Expr × ExprContext)) :=
+  (·.toList) <$> s.toArray
 
 /--
 Lazy stream of closed `match` (and optionally `casesOn`) discriminants occurring in an `Expr`,

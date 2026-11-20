@@ -40,19 +40,37 @@ unfold override list, and zero or more `±flag` overrides (`inst`, `beta`, `zeta
   `+inst` combines freely with `[items]` and other `+flags`. On `/reducible`, `/instances`,
   `/defeq`, and `/sym`, instance-implicit comparison is always enabled and `-inst` is rejected
   (use `/structural` for syntactic instance comparison).
-- **`[±decl, ±simpSet, ±$x]`**: rules apply left-to-right (**last wins**). Removing an unfold
-  rule (`-c` or `-simp`) when neither the base engine nor an earlier `+` item unfolds it is a
-  static error (or a runtime error for local `-$x`). Local `$x` (or `$(e)`) items must evaluate
-  to a free variable referring to a dependent `let` declaration in the current `LocalContext`
-  (non-dependent `have` declarations and ordinary hypotheses cannot be unfolded).
+- **`[±decl, ±simpSet, ±$x]`**: rules apply left-to-right (**last wins**). Static `[decl]`
+  items must name an unfoldable definition (`ConstantInfo.hasValue`); theorems, constructors,
+  inductive types, axioms, and opaque constants are rejected at compile time and runtime. Removing
+  an unfold rule (`-c` or `-simp`) when neither the base engine nor an earlier `+` item unfolds it
+  is a static error (or a runtime error for local `-$x`). Local `$x` (or `$(e)`) items must
+  evaluate to a free variable referring to a dependent `let` declaration in the current
+  `LocalContext` (non-dependent `have` declarations and ordinary hypotheses cannot be unfolded).
 - **Reduction flags (`±beta`, `±zeta`, `±proj`, `±eta`)**:
   - `±zeta` controls **both** `let` expressions inside terms (`zeta`) and `let`-bound local
     definitions in `LocalContext` (`zetaDelta`, overridable per variable via `[±$x]`).
-  - `+beta` steps inspected head beta-redexes via `headBeta`; `+proj` reduces inspected field
-    projections.
+  - `+beta` steps inspected head beta-redexes via `headBeta`; `+proj` contracts inspected kernel
+    projections applied to constructors (`projectCore?`).
   - `±eta` toggles `λ`-eta in `/structural`, whereas `-eta` on `isDefEq` engines disables
     structure eta (`etaStruct := .none`) while keeping `Meta.isDefEq`'s `λ`-eta and built-in
     `Nat`/unit reductions active.
+- **Structure projection encodings (`+proj` vs. `[Struct.field]` vs. kernel `.proj`)**:
+  surface `s.val` elaborates to the projection function `@Subtype.val _ _ s`, whereas `whnf`,
+  `unfold`, or `cases` can produce kernel `.proj ``Subtype 0 s`. Keeping `+proj` and `[S.field]`
+  orthogonal preserves syntactic distinctions:
+
+  | Construct | Meaning in `/structural` | Behavior on `⟨v, h⟩.val` / `.proj` |
+  |---|---|---|
+  | Default `/structural` | Strictly syntactic | Matches `@S.field _ s` only against `@S.field` |
+  | `+proj` | Contracts constructor `.proj` redexes | Reduces `.proj S i (S.mk ...)` |
+  | `[S.field]` | Unfolds `S.field` to `.proj S i` | Matches `@S.field _ s` against both forms |
+  | `[S.field] +proj` | Unfolds field & contracts redexes | Collapses `S.val (S.mk ?v _)` to `?v` |
+  | `/reducible` | `isDefEq` at `.reducible` (`-hints`) | Unfolds `@[reducible]` projs & redexes |
+
+  To match redex shapes reliably, use `/structural` rather than an `isDefEq` engine (`/reducible`
+  normalizes redexes first). Under `/reducible`, unification hints are disabled (`¬ ?A` requires
+  explicit `[Not]` or `[Not, Ne]` to match `P → False`).
 - **`/sym` restrictions**: `/sym` requires a `[MonadSym m]` monad (such as `SymM`, `GrindM`,
   `GoalM`, `Sym.Simp.SimpM`, `Sym.DSimp.DSimpM`, or `GrindTacticM` inside `sym =>` tactics). It
   rejects `[items]`, local `$x` items, and disabling `-inst`/`-beta`/`-zeta`/`-proj`/`-eta`.
@@ -89,21 +107,50 @@ unfold override list, and zero or more `±flag` overrides (`inst`, `beta`, `zeta
 - **Binders (`?x`)**: `?x` binds a local variable `x : Expr` on its first occurrence and never
   captures variables bound inside the pattern (matching `∀ x, ?Q` against `∀ n, n = n` fails).
   Repeating `?x` in the same pattern is a compile-time error; use `$x` on later occurrences.
-- **Higher-order vs. first-order patterns**: `?P x y` is higher-order when `x y` are distinct
-  pattern-bound variables, capturing a lambda abstraction (including constant functions and
-  reordered arguments such as `∀ x y, ?R y x`). Applying `P.beta #[x, y]` reconstructs the body
-  while preserving inner lambdas under `/structural` (`-eta`). Applications whose arguments
-  mention pattern-bound variables in non-Miller form (such as `?P (x + 1)`, `?P x x`, or
-  `?P x 0`) are rejected at compile time. Applications with no pattern-bound variable arguments
+- **Higher-order vs. first-order patterns and `$P a` pins**: `?P x y` is higher-order when `x y`
+  are distinct pattern-bound variables, capturing a lambda abstraction (including constant
+  functions and reordered arguments such as `∀ x y, ?R y x`). When `x y` are in trailing
+  position on `f x y`, `mkLambdaFVars ... (etaReduce := true)` eta-peels `P := f`, so `$P 0` in
+  `(expr| (∀ x, ?P x) ∧ ($P 0))` matches without `+beta`; when `x` is non-trailing (such as
+  `∀ x, x + 1 = 2`, giving `P := fun x => x + 1 = 2`), `$P 0` builds a beta redex and requires
+  `+beta` (or `/reducible`) to match `0 + 1 = 2`. Applying `P.beta #[x, y]` reconstructs the body
+  on the Lean side while preserving inner lambdas under `/structural` (`-eta`). Applications whose
+  arguments mention pattern-bound variables in non-Miller form (such as `?P (x + 1)`, `?P x x`,
+  or `?P x 0`) are rejected at compile time. Applications with no pattern-bound variable arguments
   (such as `?f ?a` or `?f 0`) remain first-order.
-- **Pins (`$e` and nonlinear `$x`)**: `$e` (or `$(e)`) pins an in-scope `Expr` value evaluated
-  in the enclosing context. Writing `$x` after an earlier `?x` in the same pattern creates a
-  nonlinear self-pin requiring both positions to match modulo the pattern's relation. Bare
-  identifiers inside a quotation resolve statically where the quotation is written; goal locals
-  must be pinned or spliced with `$h`.
+- **Binder type ascriptions under `/structural` (`(?x : T)` vs. `(?x : ?T)`)**: `/structural`
+  matches purely syntactically against the elaborated pattern body and never calls `inferType` on
+  captures (`O(|pattern|)`). An explicit `(?x : T)` constrains `/structural` only when
+  elaboration embeds `T` into the pattern body (for example, `(?x : Nat) + ?y` fixes `@HAdd Nat`).
+  At unconstrained positions (`(?x : Nat)`, `(?P : Prop) → (?Q : Prop)`, `(?f : _) (?x : Nat)`,
+  or after `[Not]` unfolds `¬ ?A`), `/structural` does not check the type at runtime:
+  - Type-only binders such as `(?x : ?T)` or `(?f : ?A → ?B) ?x` are rejected at compile time
+    under `/structural` (use `/reducible` or call `inferType`).
+  - Unconstrained explicit ascriptions under `/structural` emit `linter.exprQuot.uncheckedType`
+    (enable `/reducible` for checked binder types, or use bare `?x` plus an explicit `isProp` /
+    `isDefEq` check).
+- **Pins (`$e` and nonlinear `$x`) and rigid caller metavariables**: `$e` (or `$(e)`) pins an
+  in-scope `Expr` value evaluated in the enclosing context. Writing `$x` after an earlier `?x` in
+  the same pattern creates a nonlinear self-pin requiring both positions to match modulo the
+  pattern's relation. Bare identifiers inside a quotation resolve statically where the quotation is
+  written; goal locals must be pinned or spliced with `$h`. Even under `/reducible`/`/defeq`,
+  matching runs inside `withNewMCtxDepth`, so pins and caller metavariables inside the scrutinee
+  are rigid (`match` never mutates caller mvars; use `Meta.isDefEq` / `apply` / `assumptionCore`
+  when unification is desired).
+- **Scope idioms (variadic spines, constructors, carrier aliases)**:
+  - `f ..` after a concrete constant works in patterns; `..` after a pattern variable or pin
+    (`?g ..` / `$g ..`) is rejected at compile time (for runtime variable-arity heads, inspect
+    `e.getAppFn` / `sub.getAppPrefix`).
+  - Matching same-constructor equations of arbitrary arity (`?C _ = ?C _`): match `?l = ?r` and
+    inspect `Lean.Meta.isConstructorApp'?` or call `Meta.injection`.
+  - Carrier aliases (`(?x : _) ∈ (?s : FSet _)` on `s : NatSet` with `abbrev NatSet := FSet Nat`):
+    `+inst` only relaxes `[instImplicit]` arguments, so use `/reducible` (still indexed) or
+    `[NatSet]` under `/structural +inst`.
 - **Wildcards (`_` / `?_`)**: match any subterm without binding a variable; multiple `_`
   wildcards in one pattern (and unresolved implicit arguments in patterns) are independent and
-  never unify distinct subterms.
+  never unify distinct subterms. Inside `match` / `if let` / `for case`, macros inside
+  `` `(expr| ...) `` bodies (such as `if c then t else e`) are not pre-expanded, so user `?c`
+  holes and `_` wildcards remain intact.
 
 ### Native Control Flow
 
@@ -160,17 +207,26 @@ In term position, `` `(expr[rel]| t) `` elaborates into `MetaM Expr` (or `m Expr
 - **`firstHyp` / `firstHyp?` (`TacticM`) and `MVarId.firstHyp` / `MVarId.firstHyp?` (`MetaM` /
   `MonadBacktrack`)**: try `f h ty` across `localHypTypes` (`reverse := true` newest first by
   default), enter the goal's local context automatically, and roll back state atomically on
-  failure without admitting `sorry` or leaking diagnostics (`firstHyp` throws
-  `"firstHyp: no hypothesis matched"` if no hypothesis succeeds).
+  failure without admitting `sorry` or leaking diagnostics (`Tactic.firstHyp` throws
+  `"firstHyp: no hypothesis matched"`, appending `(last error: ...)` when any non-`failure` error
+  occurred).
 - **`subterms e (dedup := true) (includeAppPrefixes := false)` + `ExprContext.fill`**: lazy
   outermost-first stream of closed `(subterm, ctx)` pairs. With `dedup := true` (default),
   structurally equal subterms are visited once along their first context path; set
   `dedup := false` to visit every occurrence with its own `ExprContext`. `ctx.fill e'`
   substitutes `e'` into the hole while preserving unchanged subtrees. Note that `subterms`
   traverses `e` syntactically without calling `instantiateMVars`.
+- **`subtermsUnderBinders e (dedup := true) (includeAppPrefixes := false)`**: lazy `MetaM`-lifted
+  stream yielding `(subterm, ctx)` pairs inside opened `.lam`/`.forallE`/`.letE` binders. During
+  each loop iteration, the enclosing binders are live in `LocalContext`, `ctx.binders : Array Expr`
+  lists those free variables outermost-first (`#[]` for closed `subterms`), and `ctx.fill e'`
+  automatically re-abstracts them when rebuilding the enclosing expression. Prefer `for ... in
+  subtermsUnderBinders e do` over `.toArray` when running `MetaM` checks on yielded subterms.
 - **`matchDiscriminants e (alsoCasesOn := false) (dedup := true)`**: lazy outermost-first
   stream of closed `match` (and optionally `casesOn`) discriminants paired with `ExprContext`.
-  Unlike `subterms`, `matchDiscriminants` instantiates assigned metavariables first.
+  Unlike `subterms`, `matchDiscriminants` instantiates assigned metavariables first. Conditionals
+  (`if c then t else e`) are ordinary definitions (`ite`/`dite`), so iterate `subterms` with
+  `` `(expr| if ?c then _ else _) `` rather than `matchDiscriminants`.
 
 ## Idioms for Porting Rocq `match goal` Tactics
 
@@ -216,8 +272,19 @@ In term position, `` `(expr[rel]| t) `` elaborates into `MetaM Expr` (or `m Expr
   all engines.
 - **Error hints and linters**:
   - Repeated `?x` in a pattern suggests `$x`; an unbound `$x` identifier pin suggests `?x`.
+  - Templates leaving unresolved metavariables or implicits (such as `` `(expr| []) ``) append
+    an actionable type-ascription / splice / `?_` note.
   - `linter.exprQuot.numeralDefaulting` (default `true`): warns when a pattern numeral relies
     on `OfNat` defaulting to `Nat` and suggests adding a type annotation such as `(0 : Nat)`.
   - `linter.exprQuot.syntaxHole` (default `true`): warns on named `?x` inside ordinary syntax
     quotations in `Expr`-typed match patterns or `Expr`/`m Expr`-typed term positions (never
     `?_` or `Syntax`/`TSyntax` quotations).
+  - `linter.exprQuot.collapsedPattern` (default `true`): warns when a non-variable pattern
+    reduces under its own relation to a bare pattern variable (such as `Subtype.mk ?v _ |>.val`
+    under `/reducible`), and `#check_pattern` displays the `collapsed normal form`.
+  - `linter.exprQuot.uncheckedType` (default `true`): warns when an explicit `(?x : T)` type
+    ascription under `/structural` sits solely in type-unconstrained positions.
+  - `linter.unusedVariables` ignores object-level binders inside `` `(expr| ∀ x, _) `` while
+    still warning on unused `?x` pattern captures and `$...` splices.
+  - `exprQuot.debug.checkIndex` (default `false`): debug option that cross-checks indexed
+    dispatch against all skipped arms linearly and fails on any disagreement.

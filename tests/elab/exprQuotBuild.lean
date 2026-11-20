@@ -38,12 +38,18 @@ private def tryBuild (x : MetaM Expr) : MetaM (Except String Expr) := do
 error: don't know how to synthesize placeholder
 context:
 ⊢ Nat
+
+Note: expr templates must be fully determined at compile time
 -/
-#guard_msgs in
+#guard_msgs (substring := true) in
 def badUnderscore : MetaM Expr := `(expr| (_ : Nat) + 1)
 
-/-- error: Failed to infer type of binder `x` -/
-#guard_msgs in
+/--
+error: Failed to infer type of binder `x`
+
+Note: expr templates must be fully determined at compile time
+-/
+#guard_msgs (substring := true) in
 def badUnannotatedLam : MetaM Expr := `(expr| fun x => x)
 
 /--
@@ -51,22 +57,28 @@ error: don't know how to synthesize implicit argument `α`
   @List.nil ?m.1
 context:
 ⊢ Type ?u.2
+
+Note: expr templates must be fully determined at compile time
 -/
-#guard_msgs in
+#guard_msgs (substring := true) in
 def badImplicitNil : MetaM Expr := `(expr| List.nil)
 
 /--
 error: invalid `expr` quotation: unresolved universe level metavariables in
   Sort ?u.2
+
+Note: expr templates must be fully determined at compile time
 -/
-#guard_msgs in
+#guard_msgs (substring := true) in
 def badSortLevel : MetaM Expr := `(expr| Sort _)
 
 /--
 error: invalid `expr` quotation: unresolved universe level metavariables in
   PUnit
+
+Note: expr templates must be fully determined at compile time
 -/
-#guard_msgs in
+#guard_msgs (substring := true) in
 def badPUnitLevel : MetaM Expr := `(expr| PUnit)
 
 /--
@@ -111,20 +123,27 @@ error: invalid `expr` quotation: hole `?_` has unresolved type; add a type annot
 #guard_msgs in
 def badUnannotatedAnonHole : MetaM Expr := `(expr| ?_)
 
+-- Old behavior (`Q9`/`C4`): under-determined `_` in templates emitted only the raw
+-- "don't know how to synthesize placeholder" error without reminding users about splices/`?_`.
+-- New behavior: `reportTermBuildErrors` appends an actionable template determination `Note:`.
 /--
 error: don't know how to synthesize placeholder for argument `tail`
 context:
 ⊢ List ?m.1
+
+Note: expr templates must be fully determined at compile time
 -/
-#guard_msgs in
+#guard_msgs (substring := true) in
 def badConsTailHole (x : Expr) : MetaM Expr := `(expr| @List.cons _ $x _)
 
 /--
 error: don't know how to synthesize placeholder for argument `isLt`
 context:
 ⊢ 0 < 3
+
+Note: expr templates must be fully determined at compile time
 -/
-#guard_msgs in
+#guard_msgs (substring := true) in
 def badFinProofHole : MetaM Expr := `(expr| @Fin.mk 3 0 _)
 
 /-- error: unknown identifier `missingSplice` in `$`-pin (did you mean `?missingSplice`?) -/

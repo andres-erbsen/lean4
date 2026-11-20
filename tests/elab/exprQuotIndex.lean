@@ -23,6 +23,9 @@ namespace ExprQuotIndexTest
 open Lean Meta
 open Lean.Meta.Sym (SymM)
 
+-- Cross-check indexed dispatch against skipped arms linearly (`Q2`/`A3`).
+set_option exprQuot.debug.checkIndex true
+
 private def assertEq [BEq α] [Repr α] (label : String) (actual expected : α) :
     MetaM Unit := do
   unless actual == expected do

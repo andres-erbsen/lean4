@@ -450,12 +450,28 @@ def collectPatternVars (alt : MatchAltView k) : TermElabM (Array PatternVar × M
     pushInfoLeaf <| .ofChoiceResolutionInfo info
   return (s.vars, alt)
 
+-- Keep `Parser.Term.exprQuot` unexpanded (forwarding the predicate recursively) so macros
+-- like `if c then t else e` inside `` `(expr| ...) `` preserve user holes for `ExprQuot`.
+private partial def expandPatternMacros (stx : Syntax) : MacroM Syntax :=
+  withRef stx do
+    match stx with
+    | .node info kind args =>
+      if kind != ``Lean.Parser.Term.byTactic && kind != ``Lean.Parser.Term.exprQuot then
+        match (← expandMacro? stx) with
+        | some stxNew => expandPatternMacros stxNew
+        | none =>
+          let args' ← Macro.withIncRecDepth stx (args.mapM expandPatternMacros)
+          return .node info kind args'
+      else
+        return stx
+    | _ => return stx
+
 /--
 Return the pattern variables in the given pattern.
 Remark: this method is not used by the main `match` elaborator, but in the precheck hook and other macros (e.g., at `Do.lean`).
 -/
 def getPatternVars (patternStx : Syntax) : TermElabM (Array PatternVar) := do
-  let patternStx ← liftMacroM <| expandMacros patternStx
+  let patternStx ← liftMacroM <| expandPatternMacros patternStx
   let (_, s) ← (CollectPatternVars.collect patternStx).run {}
   return s.vars
 
@@ -466,7 +482,7 @@ This method is used in the `match` and `do` notation elaborators
 def getPatternsVars (patterns : Array Syntax) : TermElabM (Array PatternVar) := do
   let collect : CollectPatternVars.M Unit := do
     for pattern in patterns do
-      discard <| CollectPatternVars.collect (← liftMacroM <| expandMacros pattern)
+      discard <| CollectPatternVars.collect (← liftMacroM <| expandPatternMacros pattern)
   let (_, s) ← collect.run {}
   return s.vars
 

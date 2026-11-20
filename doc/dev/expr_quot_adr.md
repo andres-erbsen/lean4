@@ -356,9 +356,21 @@ interactions with `DiscrTree` keys.
   `structuralTrieGetMatch`, `structuralScrutineeStep`), resolve assigned metavariables lazily at
   inspected heads only via pure `resolveHeadMVarPure` — never calling full-scrutinee
   `instantiateMVars`.
+- In `withRelDefEqConfig`, set `unificationHints := false` (so single-arm and multi-arm
+  `/reducible` agree without unindexed hints such as `Not p =?= p → False`; matching `P → False`
+  with `¬ ?A` explicitly uses `[Not]`), and disable `backward.isDefEq.implicitBump` at
+  `.reducible` transparency so non-instance implicit type arguments match `DiscrTree.mkPath`.
 - In `/reducible` indexing (`reduciblePatKeys`), record `hasNatLitKey` on `CachedMetaIndex` when
-  any pattern lowers to a `.lit (.natVal _)`; during lookup (`matchIndexedCandidates`), call
-  `reduceToNatLit?` (guarded by `withIncRecDepth`) **only** when `hasNatLitKey` is `true`.
+  any pattern lowers via `reduceToNatLit?` (extending to closed `Meta.reduceNat?` terms) to a
+  `.lit (.natVal _)`; return `#[.star]` on root `Nat` offsets (`isNatOffsetExpr`), root proofs,
+  `String.ofList`, and `flags.eta` structure constructors / unit-like expressions; and run
+  `annotateReduciblePatForIndex` so nested `Nat` literals/offsets, proofs, `String.ofList`, and
+  `flags.eta` lambdas/structure constructors/unit-like terms receive `DiscrTree.mkNoindexAnnotation`
+  before `DiscrTree.mkPath`.
+- Track transitive constant reducibility statuses (`collectPatReducibilityDeps`) on
+  `CachedMetaIndex` and skip `metaIndexCacheRef` caching for `[simpSet]` relations so
+  `local reducible` and `local simp` scopes never read stale cached indices; provide
+  `exprQuot.debug.checkIndex` to verify skipped arms linearly in index equivalence tests.
 - In `/sym` indexing (`annotateSymNatAndOffsets`, `mkSymPatDiscrTreeKeys`), mark offsets
   (`Sym.isOffset?`, `Sym.isQuasiOffset`), `Nat` values/literals, `Nat.zero`, lambdas, and sorts
   with `DiscrTree.mkNoindexAnnotation` (yielding root key `#[.star]`) so offset patterns like
@@ -476,6 +488,19 @@ quotations, or duplicate `InfoTree` entries.
     exception is thrown.
   - `checkNumeralDefaultingMVars` activates only when `linter.exprQuot.numeralDefaulting` is true
     and inspects pending `OfNat ?α _` synthetic metavariables before default synthesis.
+  - `linter.exprQuot.collapsedPattern` warns via `ExprPattern.collapsedNormalForm?` when a
+    non-variable pattern reduces under its own relation to a bare variable/metavariable application
+    (preserving exact runtime matching semantics while diagnosing vacuous redex patterns), and
+    `#check_pattern` displays the collapsed normal form.
+  - `linter.exprQuot.uncheckedType` warns when an explicit `(?x : T)` ascription in a
+    `/structural` pattern appears solely at type-unconstrained positions (while `(?x : ?T)`
+    type-only binders are rejected at compile time under `/structural`).
+  - `ExprPattern.formatBody`, `inspectExprQuotPattern`, and `trace.Meta.Match.expr` open pattern
+    binders inside `lambdaBoundedTelescope` (`withPatTraceEnv`) with renamed fvars and
+    `pp.sanitizeNames := false` so field/projection delaboration works cleanly on `?s.val` and `_`.
+  - A built-in `@[unused_variables_ignore_fn]` suppresses `linter.unusedVariables` on object-level
+    binders inside `Parser.Term.exprQuot` body (`pos == 4`) while preserving warnings on `?x`
+    captures and `$...` splices; `reportTermBuildErrors` appends template remediation hints.
   - `#check_pattern` (`src/Lean/Elab/ExprQuotCommand.lean`) lives in its own module above
     `Lean.Elab.Command` and `Lean.Elab.ExprQuot` and calls `inspectExprQuotPattern` inside
     `withoutModifyingEnv`, keeping `Lean.Elab.BuiltinCommand` free of `ExprQuot` imports.
@@ -555,3 +580,48 @@ diverging from `Meta.isDefEq` and breaking nonlinear structural patterns such as
 - Because `mkLambdaFVars` still peels the abstracted `args` when `wrapped` is `f x₁ … xₙ`,
   callers that inspect binder `Name`s on `fun x => f x` should read the binder name from the
   scrutinee `e` or match `.lam`/`.letE` directly (ADR-002), avoiding `O(depth²)` re-abstraction.
+- Conversely, when `x` is in non-trailing position (e.g. `∀ x, x + 1 = 2`), `P` stays
+  `fun x => x + 1 = 2`, so nonlinear pins `$P 0` remain unreduced under default `/structural`
+  (`-beta`) and require `+beta` or `/reducible` to instantiate `0 + 1 = 2`.
+
+---
+
+## ADR-010: Binder-Descending Subterm Iteration (subtermsUnderBinders)
+
+**Status:** Accepted
+
+**Context:**
+`subterms` and `matchDiscriminants` emit only closed subterms (`!cur.hasLooseBVars`, ADR-003),
+so callers rewriting closed targets or extracting closed `match` discriminants never observe
+dangling de Bruijn indices. However, several proof-automation passes (collecting element witnesses
+inside `∀`-quantified hypotheses, checking proposition shape under `∀ x : α, ...`, or rewriting
+`∀ x, P y x ∧ Q y x` under an outer binder) need to inspect subterms inside binders while
+keeping `MetaM` type inference and `ExprQuot` pattern matching well-scoped. Exchanging `subterms`
+to run in `MetaM` everywhere would break pure `Id`-mode `.toArray`/`.toList`, and returning raw
+open expressions with loose `.bvar`s would break `Expr.eqv`, `inferType`, and `ExprContext.fill`.
+
+**Decision:**
+- Keep `Subterms` (`subterms`) and `MatchDiscriminants` (`matchDiscriminants`) pure/closed-only as
+  originally specified (ADR-003).
+- Add a companion `SubtermsUnderBinders` stream (`subtermsUnderBinders e (dedup := true)
+  (includeAppPrefixes := false)`) in `src/Lean/Meta/ExprPattern.lean` whose `ForIn` instance runs
+  under `[Monad m] [MonadControlT MetaM m] [MonadLiftT MetaM m]`.
+- When descending into `.lam`, `.forallE`, or `.letE` bodies, open the binder via
+  `Meta.withLocalDecl` / `Meta.withLetDecl`, instantiate `.bvar 0` with the fresh `fvar`, and push
+  `.lamBodyFVar` / `.forallBodyFVar` / `.letBodyFVar` frames onto `ExprContext`.
+- Yield the same `(sub, ctx) : Expr × ExprContext` 2-tuple as `subterms` so call sites write
+  `for case (\`(expr| ...), ctx) in subtermsUnderBinders e do` uniformly; expose enclosing opened
+  binder fvars (outermost-first) via `ctx.binders : Array Expr` and keep `ctx.fill : Expr → Expr`
+  pure by calling `cur.abstract #[fv]` automatically on `*BodyFVar` frames.
+
+**Alternatives Considered:**
+1. *Making `subterms` monadic (`underBinders : Bool := false`)*: forces `MetaM` onto closed pure
+   callers and breaks `Subterms.toArray` / `Subterms.toList` in pure contexts.
+2. *Returning a 3-tuple `(sub, ctx, binders)`*: forces different `for` loop destructuring from
+   `subterms` and invites forgetting to pass `binders` when rebuilding contexts.
+
+**Consequences & Trade-offs:**
+- Closed `subterms` callers keep zero `withLocalDecl` overhead and pure `.toArray` support.
+- `subtermsUnderBinders` loop bodies see fully well-typed closed subterms in an extended
+  `LocalContext` with automatic outer-to-inner re-abstraction in `ctx.fill`, while callers know via
+  `SubtermsUnderBinders.toArray`'s docstring that eager collection exits the binder scopes.

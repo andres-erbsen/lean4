@@ -115,7 +115,7 @@ partial def reifySort (e : Expr) : MetaM SmtSort := do
   match ← instantiateMVars e with
   | `(expr| Bool) => return .bool
   | `(expr| Int) => return .int
-  | `(expr| (?a : Type) → (?b : Type)) => return .arr (← reifySort a) (← reifySort b)
+  | `(expr| ?a → ?b) => return .arr (← reifySort a) (← reifySort b)
   | e => throwError "smt_norm: unsupported sort{indentExpr e}"
 
 /-- Reifier context: the `rep` binder, object-binder map, and combinators to unfold. -/

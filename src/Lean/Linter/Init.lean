@@ -126,6 +126,18 @@ register_builtin_option linter.exprQuot.numeralDefaulting : Bool := {
   descr := "warn when an `` `(expr| ...) `` pattern relies on `OfNat` numeral defaulting to `Nat`"
 }
 
+register_builtin_option linter.exprQuot.collapsedPattern : Bool := {
+  defValue := true
+  descr := "warn when a non-variable `` `(expr| ...) `` pattern reduces under its own relation \
+    to a bare pattern variable"
+}
+
+register_builtin_option linter.exprQuot.uncheckedType : Bool := {
+  defValue := true
+  descr := "warn when an explicit `(?x : T)` type ascription in a `/structural` pattern \
+    is not enforced at runtime"
+}
+
 /--
 Global registry of options associated with environment linters.
 These are precisely options, whose value will be snapshotted during `addDecl`.
