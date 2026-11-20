@@ -18,6 +18,7 @@ import Lean.Meta.WHNF
 import Init.Omega
 public import Lean.Meta.Match.MatcherApp.Basic
 import Lean.Meta.DiscrTree
+import Lean.Util.CollectMVars
 
 public section
 
@@ -2889,6 +2890,246 @@ private def resolveReadyTCsGo {m : Type → Type} [Monad m] [MonadLiftT MetaM m]
     else
       return stillPending
 
+private structure TempVarCollector where
+  mctx         : MetavarContext
+  baseDepth    : Nat
+  baseLCtxSize : Nat
+  mvQueue      : Array MVarId := #[]
+  mvSet?       : Option (Std.HashSet MVarId) := none
+  visitedPtrs  : Array Sym.ExprPtr := #[]
+  visitedSet?  : Option (Std.HashSet Sym.ExprPtr) := none
+  reachableMVs : Array MVarId := #[]
+  reachSet?    : Option (Std.HashSet MVarId) := none
+  lmvs         : Array LMVarId := #[]
+  lmvSet?      : Option (Std.HashSet LMVarId) := none
+
+private def TempVarCollector.pushQueuedMV (s : TempVarCollector) (id : MVarId) :
+    TempVarCollector :=
+  match s.mvSet? with
+  | some set =>
+    if set.contains id then s
+    else { s with mvQueue := s.mvQueue.push id, mvSet? := some (set.insert id) }
+  | none =>
+    if s.mvQueue.contains id then s
+    else
+      let mvQueue := s.mvQueue.push id
+      if mvQueue.size >= 16 then
+        let set := mvQueue.foldl (init := ({} : Std.HashSet MVarId)) fun acc x => acc.insert x
+        { s with mvQueue, mvSet? := some set }
+      else
+        { s with mvQueue }
+
+private def TempVarCollector.pushReachMV (s : TempVarCollector) (id : MVarId) :
+    TempVarCollector :=
+  match s.reachSet? with
+  | some set =>
+    if set.contains id then s
+    else { s with reachableMVs := s.reachableMVs.push id, reachSet? := some (set.insert id) }
+  | none =>
+    if s.reachableMVs.contains id then s
+    else
+      let reachableMVs := s.reachableMVs.push id
+      if reachableMVs.size >= 16 then
+        let set := reachableMVs.foldl (init := ({} : Std.HashSet MVarId)) fun acc x =>
+          acc.insert x
+        { s with reachableMVs, reachSet? := some set }
+      else
+        { s with reachableMVs }
+
+private def TempVarCollector.containsMV (s : TempVarCollector) (id : MVarId) : Bool :=
+  match s.reachSet? with
+  | some set => set.contains id
+  | none     => s.reachableMVs.contains id
+
+private def TempVarCollector.pushLMV (s : TempVarCollector) (id : LMVarId) :
+    TempVarCollector :=
+  match s.lmvSet? with
+  | some set =>
+    if set.contains id then s
+    else { s with lmvs := s.lmvs.push id, lmvSet? := some (set.insert id) }
+  | none =>
+    if s.lmvs.contains id then s
+    else
+      let lmvs := s.lmvs.push id
+      if lmvs.size >= 16 then
+        let set := lmvs.foldl (init := ({} : Std.HashSet LMVarId)) fun acc x => acc.insert x
+        { s with lmvs, lmvSet? := some set }
+      else
+        { s with lmvs }
+
+private def TempVarCollector.containsLMV (s : TempVarCollector) (id : LMVarId) : Bool :=
+  match s.lmvSet? with
+  | some set => set.contains id
+  | none     => s.lmvs.contains id
+
+private partial def TempVarCollector.collectLevel (s : TempVarCollector) (l : Level) :
+    TempVarCollector :=
+  if !l.hasMVar then s
+  else match l with
+  | .succ l     => s.collectLevel l
+  | .max l1 l2
+  | .imax l1 l2 => (s.collectLevel l1).collectLevel l2
+  | .mvar id    =>
+    match s.mctx.lAssignment.find? id with
+    | some l' => s.collectLevel l'
+    | none    =>
+      match s.mctx.findLevelDepth? id with
+      | some d => if d > s.baseDepth then s.pushLMV id else s
+      | none   => s
+  | .zero | .param _ => s
+
+private def TempVarCollector.markVisitedPtr (s : TempVarCollector) (e : Expr) :
+    Bool × TempVarCollector :=
+  let ptr : Sym.ExprPtr := { expr := e }
+  match s.visitedSet? with
+  | some set =>
+    if set.contains ptr then (false, s)
+    else (true, { s with visitedSet? := some (set.insert ptr) })
+  | none =>
+    if s.visitedPtrs.contains ptr then (false, s)
+    else
+      let visitedPtrs := s.visitedPtrs.push ptr
+      if visitedPtrs.size >= 24 then
+        let set := visitedPtrs.foldl (init := ({} : Std.HashSet Sym.ExprPtr))
+          fun acc p => acc.insert p
+        (true, { s with visitedPtrs, visitedSet? := some set })
+      else
+        (true, { s with visitedPtrs })
+
+private partial def TempVarCollector.visitExpr (s : TempVarCollector) (e : Expr) :
+    TempVarCollector :=
+  if !e.hasExprMVar && !e.hasLevelMVar then
+    s
+  else match e with
+  | .mvar id         => s.pushQueuedMV id
+  | .sort l          => s.collectLevel l
+  | .const _ ls      => ls.foldl (fun s l => s.collectLevel l) s
+  | .bvar _ | .fvar _ | .lit _ => s
+  | _ =>
+    let (fresh, s) := s.markVisitedPtr e
+    if !fresh then s
+    else match e with
+    | .app f a         => (s.visitExpr f).visitExpr a
+    | .lam _ d b _
+    | .forallE _ d b _ => (s.visitExpr d).visitExpr b
+    | .letE _ t v b _  => ((s.visitExpr t).visitExpr v).visitExpr b
+    | .mdata _ b
+    | .proj _ _ b      => s.visitExpr b
+    | _                => s
+
+private def collectReachableTempVars (mctx : MetavarContext) (baseDepth baseLCtxSize : Nat)
+    (e : Expr) : TempVarCollector := Id.run do
+  let mut s : TempVarCollector := { mctx, baseDepth, baseLCtxSize }
+  s := s.visitExpr e
+  let mut idx := 0
+  while h : idx < s.mvQueue.size do
+    let id := s.mvQueue[idx]
+    idx := idx + 1
+    if let some decl := s.mctx.findDecl? id then
+      if decl.depth > baseDepth then
+        s := s.visitExpr decl.type
+        if decl.lctx.decls.size > baseLCtxSize then
+          for i in baseLCtxSize...decl.lctx.decls.size do
+            if let some ldecl := decl.lctx.decls[i]! then
+              s := s.visitExpr ldecl.type
+              if let some lval := ldecl.value? then
+                s := s.visitExpr lval
+        if let some v := s.mctx.getExprAssignmentCore? id then
+          s := s.visitExpr v
+        else
+          s := s.pushReachMV id
+          if let some d := s.mctx.getDelayedMVarAssignmentCore? id then
+            s := s.pushQueuedMV d.mvarIdPending
+  return s
+
+private def splitAffectingPreTCs (mctx : MetavarContext) (baseDepth baseLCtxSize : Nat)
+    (expVars : TempVarCollector) (preTCs : Array MVarId) : Array MVarId × Array MVarId :=
+  Id.run do
+  if preTCs.isEmpty then
+    return (#[], #[])
+  let mut rel := expVars
+  let mut remaining := preTCs.map fun tcMV =>
+    let tcTy := match mctx.findDecl? tcMV with
+      | some d => d.type
+      | none   => default
+    (tcMV, collectReachableTempVars mctx baseDepth baseLCtxSize tcTy)
+  let mut affecting : Array MVarId := #[]
+  let mut changed := true
+  while changed && !remaining.isEmpty do
+    changed := false
+    let mut nextRemaining := Array.emptyWithCapacity remaining.size
+    for (tcMV, tcVars) in remaining do
+      let hitsM := !tcVars.reachableMVs.isEmpty && tcVars.reachableMVs.any rel.containsMV
+      let hitsL := !tcVars.lmvs.isEmpty && tcVars.lmvs.any rel.containsLMV
+      if hitsM || hitsL then
+        affecting := affecting.push tcMV
+        changed := true
+        for m in tcVars.reachableMVs do
+          rel := rel.pushReachMV m
+        for lm in tcVars.lmvs do
+          rel := rel.pushLMV lm
+      else
+        nextRemaining := nextRemaining.push (tcMV, tcVars)
+    remaining := nextRemaining
+  return (affecting, remaining.map (·.1))
+
+private def filterActivePendingTCs (mctx : MetavarContext) (pendingTCs : Array MVarId) :
+    Array MVarId := Id.run do
+  let mut assignedCount := 0
+  for tcMV in pendingTCs do
+    if mctx.eAssignment.contains tcMV || mctx.dAssignment.contains tcMV then
+      assignedCount := assignedCount + 1
+  if assignedCount == 0 then
+    return pendingTCs
+  if assignedCount == pendingTCs.size then
+    return #[]
+  let mut out := Array.emptyWithCapacity (pendingTCs.size - assignedCount)
+  for tcMV in pendingTCs do
+    if !mctx.eAssignment.contains tcMV && !mctx.dAssignment.contains tcMV then
+      out := out.push tcMV
+  return out
+
+private def anyTCGoalReady (mctx : MetavarContext) (baseDepth : Nat)
+    (tcs : Array MVarId) : MetaM Bool := do
+  for tcMV in tcs do
+    let some decl := mctx.findDecl? tcMV | continue
+    let tcTy ← instantiateMVars decl.type
+    if ← isTCGoalReady baseDepth tcTy then
+      return true
+  return false
+
+private def setMVarKinds (mvs : Array MVarId) (kind : MetavarKind) : MetaM Unit :=
+  modifyMCtx fun mctx =>
+    mvs.foldl (init := mctx) fun mctx mv => mctx.setMVarKind mv kind
+
+private def setHolePlaceholderDepths (holes : Array HolePlaceholder) (depth : Nat) : MetaM Unit :=
+  modifyMCtx fun mctx =>
+    holes.foldl (init := mctx) fun mctx (_, mv, _) =>
+      match mctx.findDecl? mv with
+      | some decl => { mctx with decls := mctx.decls.insert mv { decl with depth } }
+      | none      => mctx
+
+private def trialDefEqWithDeferredTCs (curDepth baseDepth : Nat) (holes : Array HolePlaceholder)
+    (deferredTCs : Array MVarId) (checkDefEq : Expr → Expr → MetaM Bool)
+    (argTy expTy : Expr) : MetaM Bool := do
+  let mctxSaved ← getMCtx
+  try
+    let ok ←
+      try
+        setMVarKinds deferredTCs .syntheticOpaque
+        setHolePlaceholderDepths holes baseDepth
+        withConfig (fun cfg => { cfg with assignSyntheticOpaque := true }) <|
+          checkDefEq argTy expTy
+      finally
+        setMVarKinds deferredTCs .synthetic
+        setHolePlaceholderDepths holes curDepth
+    unless ok do
+      setMCtx mctxSaved
+    return ok
+  catch ex =>
+    setMCtx mctxSaved
+    throw ex
+
 namespace ExprPattern.Internal
 
 def resolveReadyTCs {m : Type → Type} [Monad m] [MonadLiftT MetaM m]
@@ -2910,6 +3151,61 @@ def resolveRemainingTCs {m : Type → Type} [Monad m] [MonadLiftT MetaM m]
       liftM (m := MetaM) <| throwError
         "expr quotation failed to resolve dependent instance{indentExpr tcTy}"
     synth tcMV tcTy
+
+def checkSpliceTypeWithPendingTCs {m : Type → Type} [Monad m] [MonadLiftT MetaM m]
+    (synth : MVarId → Expr → m Unit) (baseDepth baseLCtxSize : Nat)
+    (holes : Array HolePlaceholder) (pendingTCs : Array MVarId) (argTy expTy : Expr)
+    (checkDefEq : Expr → Expr → MetaM Bool) : m (Bool × Array MVarId × Expr) := do
+  if pendingTCs.isEmpty then
+    let ok ← liftM (m := MetaM) (checkDefEq argTy expTy)
+    return (ok, pendingTCs, expTy)
+  let mctx ← liftM (m := MetaM) getMCtx
+  let activeTCs := filterActivePendingTCs mctx pendingTCs
+  if activeTCs.isEmpty then
+    let ok ← liftM (m := MetaM) (checkDefEq argTy expTy)
+    return (ok, #[], expTy)
+  if !hasTempMVar mctx baseDepth expTy then
+    let ok ← liftM (m := MetaM) (checkDefEq argTy expTy)
+    return (ok, activeTCs, expTy)
+  let expVars := collectReachableTempVars mctx baseDepth baseLCtxSize expTy
+  let hasDeferred := activeTCs.any expVars.containsMV
+  if !hasDeferred then
+    unless ← liftM (m := MetaM) (anyTCGoalReady mctx baseDepth activeTCs) do
+      let ok ← liftM (m := MetaM) (checkDefEq argTy expTy)
+      return (ok, activeTCs, expTy)
+  let (deferredTCs, otherTCs) := activeTCs.partition expVars.containsMV
+  let (preSpliceTCs, untouchedTCs) :=
+    splitAffectingPreTCs mctx baseDepth baseLCtxSize expVars otherTCs
+  let mut remPreTCs := preSpliceTCs
+  let mut expTy := expTy
+  if !remPreTCs.isEmpty then
+    remPreTCs ← resolveReadyTCs synth baseDepth remPreTCs
+    expTy ← liftM (m := MetaM) (instantiateMVars expTy)
+  if deferredTCs.isEmpty then
+    let ok ← liftM (m := MetaM) (checkDefEq argTy expTy)
+    return (ok, remPreTCs ++ untouchedTCs, expTy)
+  let curDepth := (← liftM (m := MetaM) getMCtx).depth
+  let ok ← liftM (m := MetaM) <|
+    trialDefEqWithDeferredTCs curDepth baseDepth holes deferredTCs checkDefEq argTy expTy
+  if ok then
+    let mctxAfter ← liftM (m := MetaM) getMCtx
+    let remPre := filterActivePendingTCs mctxAfter remPreTCs
+    let remDef := filterActivePendingTCs mctxAfter deferredTCs
+    let stillPending := remPre ++ remDef ++ untouchedTCs
+    return (true, stillPending, expTy)
+  let stillPending ← resolveReadyTCs synth baseDepth (remPreTCs ++ deferredTCs)
+  expTy ← liftM (m := MetaM) (instantiateMVars expTy)
+  let mctxMid ← liftM (m := MetaM) getMCtx
+  let remDeferred := filterActivePendingTCs mctxMid deferredTCs
+  let ok2 ← liftM (m := MetaM) <|
+    if remDeferred.isEmpty then
+      checkDefEq argTy expTy
+    else
+      trialDefEqWithDeferredTCs curDepth baseDepth holes remDeferred checkDefEq argTy expTy
+  let mctxFinal ← liftM (m := MetaM) getMCtx
+  let finalPending :=
+    filterActivePendingTCs mctxFinal stillPending ++ untouchedTCs
+  return (ok2, finalPending, expTy)
 
 end ExprPattern.Internal
 
@@ -2933,6 +3229,7 @@ def ExprTemplate.instantiateResolved (tmpl : ExprTemplate) (rel : ResolvedExprMa
   if n == 0 && tmpl.levelParams.isEmpty then
     return tmpl.lam
   let baseDepth := (← getMCtx).depth
+  let baseLCtxSize := (← getLCtx).decls.size
   let transparency := engineTransparency rel.engine
   let (body, substAfterSplices, holePlans) ← withNewMCtxDepth do
     let us ← tmpl.levelParams.mapM fun _ => mkFreshLevelMVar
@@ -2955,17 +3252,19 @@ def ExprTemplate.instantiateResolved (tmpl : ExprTemplate) (rel : ResolvedExprMa
         subst := subst.push mv
         pendingTCs := pendingTCs.push mv.mvarId!
       | .splice pos =>
-        if !pendingTCs.isEmpty && hasTempMVar (← getMCtx) baseDepth expTy then
-          pendingTCs ← resolveReadyTCs synthTCWithError baseDepth pendingTCs
-          expTy ← instantiateMVars expTy
         let val := splices.getD pos default
         if val.hasLooseBVars then
           throwError "expr quotation splice expression contains loose bound variable:\
             {indentExpr val}"
         let argTy ← instantiateMVars (← inferType val)
-        let ok ← withRelUnfoldRules rel <|
-          withRelDefEqConfig transparency rel.flags rel.flags.zeta rel.flags.zeta <|
-            isDefEq argTy expTy
+        let (ok, pendingTCs', expTy') ← checkSpliceTypeWithPendingTCs
+          synthTCWithError baseDepth baseLCtxSize holePlaceholders pendingTCs argTy expTy
+          fun aTy eTy =>
+            withRelUnfoldRules rel <|
+              withRelDefEqConfig transparency rel.flags rel.flags.zeta rel.flags.zeta <|
+                isDefEq aTy eTy
+        pendingTCs := pendingTCs'
+        expTy := expTy'
         unless ok do
           let expTyShown ← instantiateMVars expTy
           throwError "expr quotation splice type mismatch: argument{indentExpr val}\n\

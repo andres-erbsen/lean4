@@ -309,6 +309,7 @@ private def instantiateSymCore (siteId : Name) (tmpl : ExprTemplate)
   if n == 0 && tmpl.levelParams.isEmpty then
     return lamShared
   let baseDepth := (← getMCtx).depth
+  let baseLCtxSize := (← getLCtx).decls.size
   let (domsShared, bodyShared) := peelTemplateLambdas n lamShared
   let _ := domsShared
   let (usResolved, substAfterSplices, holePlans) ← withNewMCtxDepth do
@@ -332,20 +333,19 @@ private def instantiateSymCore (siteId : Name) (tmpl : ExprTemplate)
         subst := subst.push mv
         pendingTCs := pendingTCs.push mv.mvarId!
       | .splice pos =>
-        if !pendingTCs.isEmpty && hasTempMVar (← getMCtx) baseDepth expTy then
-          pendingTCs ← resolveReadyTCs synthSymTCWithError baseDepth pendingTCs
-          expTy ← instantiateMVars expTy
         let rawVal := splices.getD pos default
         if rawVal.hasLooseBVars then
           throwError "expr quotation splice expression contains loose bound variable:\
             {indentExpr rawVal}"
         let val ← ensureSymExpr rawVal
         let argTy ← instantiateMVars (← inferType val)
-        let ok ←
-          if Sym.isSameExpr argTy expTy then
-            pure true
-          else
-            withTransparency .default <| isDefEq argTy expTy
+        let (ok, pendingTCs', expTy') ← checkSpliceTypeWithPendingTCs
+          synthSymTCWithError baseDepth baseLCtxSize holePlaceholders pendingTCs argTy expTy
+          fun aTy eTy =>
+            if Sym.isSameExpr aTy eTy then pure true
+            else withTransparency .default <| isDefEq aTy eTy
+        pendingTCs := pendingTCs'
+        expTy := expTy'
         unless ok do
           let expTyShown ← instantiateMVars expTy
           throwError "expr quotation splice type mismatch: argument{indentExpr val}\n\

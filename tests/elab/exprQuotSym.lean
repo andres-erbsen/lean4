@@ -731,6 +731,63 @@ private axiom symAltNatBoxed : @SymBoxed Nat symAltNatTagInst
 
 end SymSpliceAssignedInstancePreservation
 
+section SymSpliceReachableTCOrder
+
+private class SymOrd (α : Type) where
+  le : α → α → Prop
+
+private class SymCCPO (α : Type) extends SymOrd α where
+  bot : α
+
+private axiom SymMono {α : Type} [SymOrd α] : (α → α) → Prop
+private def symFix {α : Type} [inst : SymCCPO α] (f : α → α)
+    (_ : @SymMono α (@SymCCPO.toSymOrd α inst) f) : α := @SymCCPO.bot α inst
+
+private axiom symCcpoNG : Type
+private axiom symCcpoNGVal : symCcpoNG
+private def symNgId : symCcpoNG → symCcpoNG := fun x => x
+@[instance_reducible] private noncomputable def symLocalCCPO : SymCCPO symCcpoNG :=
+  { toSymOrd := ⟨fun _ _ => True⟩, bot := symCcpoNGVal }
+@[instance_reducible] private def symAltNatOrd : SymOrd Nat := ⟨(· ≥ ·)⟩
+@[instance_reducible] private def symAltNatCCPO : SymCCPO Nat :=
+  { toSymOrd := symAltNatOrd, bot := 88 }
+private instance : SymOrd Nat := ⟨(· ≤ ·)⟩
+private instance : SymCCPO Nat := ⟨0⟩
+private axiom symNgFixProof :
+  @SymMono symCcpoNG (@SymCCPO.toSymOrd symCcpoNG symLocalCCPO) symNgId
+private axiom symAltNatFixProof :
+  @SymMono Nat (@SymCCPO.toSymOrd Nat symAltNatCCPO) Nat.succ
+
+#guard_msgs in
+#eval show MetaM Unit from SymM.run do
+  let fNG := mkConst ``symNgId
+  let hfNG := mkConst ``symNgFixProof
+  let resNG ← `(expr/sym| symFix $fNG $hfNG)
+  Meta.check resNG
+  check (Sym.isSameExpr resNG (← Sym.shareCommon resNG))
+    "sym `(f, hf)` result with non-global instance must be maximally shared"
+  check (resNG.getAppArgs[1]!.isConstOf ``symLocalCCPO)
+    "sym `(f, hf)` must preserve non-global CCPO instance"
+
+  let fNat := mkConst ``Nat.succ
+  let hfAlt := mkConst ``symAltNatFixProof
+  let resAlt ← `(expr/sym| symFix $fNat $hfAlt)
+  Meta.check resAlt
+  check (Sym.isSameExpr resAlt (← Sym.shareCommon resAlt))
+    "sym `(f, hf)` result with conflicting global instance must be maximally shared"
+  check (resAlt.getAppArgs[1]!.isConstOf ``symAltNatCCPO)
+    "sym `(f, hf)` with class projection must preserve conflicting non-global instance"
+
+  let failed ←
+    try
+      let _ ← `(expr/sym| symFix ?f $hfAlt)
+      pure false
+    catch ex =>
+      pure ((← ex.toMessageData.toString).contains "expr quotation splice type mismatch")
+  check failed "sym `(symFix ?f $hfAlt)` must fail cleanly with splice type mismatch"
+
+end SymSpliceReachableTCOrder
+
 section SymRuntimeNameResolution
 
 -- Verify every single-backtick `/sym` symbol name referenced in `Lean.Elab.ExprQuot` resolves.

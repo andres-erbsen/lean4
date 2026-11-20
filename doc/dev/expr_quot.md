@@ -310,10 +310,12 @@ def buildExamples (a b p q P : Expr) : MetaM (Expr × Expr × Expr × Expr × Ex
   type against the expected type under `rel` (default `/defeq`; `-inst` is rejected).
 - **Static vs. runtime type-class synthesis**: untyped `` `(expr| $a + $b) `` synthesizes
   splice-dependent type-class instances at runtime, whereas concrete annotations such as
-  `` `(expr| ($a : Nat) + ($b : Nat)) `` resolve instances statically at compile time. Any instance
-  already unified from a splice is kept as-is without re-running `synthInstance`
-  (`synthAssignedInstances := false` semantics), so local or non-global instances are preserved and
-  a later conflicting splice raises an `"expr quotation splice type mismatch"` error.
+  `` `(expr| ($a : Nat) + ($b : Nat)) `` resolve instances statically at compile time. Whether
+  unified from an earlier or later splice, any reachable `[inst]` parameter is matched against the
+  splice's type before falling back to `synthInstance`, and any already-unified instance is kept
+  without re-running `synthInstance` (`synthAssignedInstances := false` semantics), so local or
+  non-global instances are preserved in any argument order and a conflicting splice raises an
+  `"expr quotation splice type mismatch"` error.
 - **Structure and sharing**: `let`/`fun` structure and repeated `$x` pointer sharing stay intact,
   `$f $x` never beta-reduces, and caller metavariables inside `$e` stay unassigned. Under `/sym`,
   terms are maximally shared with kernel `.proj` nodes folded.

@@ -762,4 +762,196 @@ private axiom globalNatBoxed : @BoxedTag Nat inferInstance
 
 end SpliceAssignedInstancePreservation
 
+/-! ### Reachable-TC trial `isDefEq`, class projections, holes, `outParam`, & delayed mvars -/
+
+section SpliceReachableTCOrderAndSafety
+
+private class MyOrd (α : Type) where
+  le : α → α → Prop
+
+private class MyCCPO (α : Type) extends MyOrd α where
+  bot : α
+
+private axiom MyMono {α : Type} [MyOrd α] : (α → α) → Prop
+private def myFix {α : Type} [inst : MyCCPO α] (f : α → α)
+    (_ : @MyMono α (@MyCCPO.toMyOrd α inst) f) : α := @MyCCPO.bot α inst
+
+private axiom ccpoNoGlobal : Type
+private axiom ccpoNoGlobalVal : ccpoNoGlobal
+private def ngId : ccpoNoGlobal → ccpoNoGlobal := fun x => x
+@[instance_reducible] private def altNatOrd : MyOrd Nat := ⟨(· ≥ ·)⟩
+@[instance_reducible] private def altNatCCPO : MyCCPO Nat :=
+  { toMyOrd := altNatOrd, bot := 99 }
+private instance : MyOrd Nat := ⟨(· ≤ ·)⟩
+private instance : MyCCPO Nat := ⟨0⟩
+private axiom ngFixProof (inst : MyCCPO ccpoNoGlobal) :
+  @MyMono ccpoNoGlobal (@MyCCPO.toMyOrd ccpoNoGlobal inst) ngId
+private axiom altNatFixProof :
+  @MyMono Nat (@MyCCPO.toMyOrd Nat altNatCCPO) Nat.succ
+
+private axiom MyMeet {σ : Type} [MyOrd σ] : σ → Prop
+private def myCombineMeet {σ₁ σ₂ : Type} [inst₁ : MyOrd σ₁] [inst₂ : MyOrd σ₂]
+    (x : PProd σ₁ σ₂) (_ : @MyMeet σ₁ inst₁ x.1) (_ : @MyMeet σ₂ inst₂ x.2) : True :=
+  .intro
+private axiom ngMeetProof (inst : MyOrd ccpoNoGlobal) :
+  @MyMeet ccpoNoGlobal inst ccpoNoGlobalVal
+private axiom altNatMeetProof : @MyMeet Nat altNatOrd 0
+
+private class CarrierBox (α : Type) where
+  ty : Type
+
+private instance : CarrierBox Nat := ⟨Int⟩
+private def acceptCarrierOut {α : Type} [c : CarrierBox α]
+    (_ : α) (_ : @CarrierBox.ty α c) : True := .intro
+
+private class OutBoxTag (α : Type) (tag : outParam Type) where
+  witness : True
+
+private instance : OutBoxTag Nat Int := ⟨.intro⟩
+private def MyIntAlias : Type := Int
+
+private class LocalBoxTag2 (α : Type) where
+  tag : Nat
+
+private structure BoxedTag2 (α : Type) [LocalBoxTag2 α] : Prop where
+  ok : True
+
+@[instance_reducible] private def altNatBoxTag2 : LocalBoxTag2 Nat := ⟨77⟩
+private instance : LocalBoxTag2 Nat := ⟨1⟩
+private axiom altNatBoxed2 : @BoxedTag2 Nat altNatBoxTag2
+
+private def useOutTag {α : Type} {tag : Type} [OutBoxTag α tag]
+    (_ : α) (_ : tag) : True := .intro
+private def useOutAndLocalTC {α : Type} {tag : Type} [OutBoxTag α tag]
+    [inst : LocalBoxTag2 α] (_ : α) (_ : PProd tag (@BoxedTag2 α inst)) : True := .intro
+private def withDepHoleBox2 {α : Type} [inst : LocalBoxTag2 α]
+    (x : α) (_ : @BoxedTag2 α inst) : α := x
+
+#guard_msgs in
+#eval show MetaM Unit from do
+  -- 1. `(f, hf)` order with class projection `MyCCPO.toMyOrd ?inst` and no global `MyCCPO`.
+  let instNG := mkApp3 (mkConst ``MyCCPO.mk) (mkConst ``ccpoNoGlobal)
+    (mkApp2 (mkConst ``MyOrd.mk) (mkConst ``ccpoNoGlobal)
+      (mkLambda `x .default (mkConst ``ccpoNoGlobal)
+        (mkLambda `y .default (mkConst ``ccpoNoGlobal) (mkConst ``True))))
+    (mkConst ``ccpoNoGlobalVal)
+  let fNG := mkConst ``ngId
+  let hfNG := mkApp (mkConst ``ngFixProof) instNG
+  let resNG ← `(expr| myFix $fNG $hfNG)
+  Meta.check resNG
+  check (resNG.getAppArgs[1]! == instNG)
+    "(f, hf) order with no global instance must preserve unified CCPO instance"
+
+  -- 2. `(f, hf)` order with conflicting global `MyCCPO Nat` (`trySynthPending` guard).
+  let fNat := mkConst ``Nat.succ
+  let hfAlt := mkConst ``altNatFixProof
+  let resAlt ← `(expr| myFix $fNat $hfAlt)
+  Meta.check resAlt
+  check (resAlt.getAppArgs[1]!.isConstOf ``altNatCCPO)
+    "(f, hf) order with class projection must not clobber via trySynthPending"
+
+  -- 3. `(x := $subX, h₁, h₂)` order (`is_meet_pprod` pattern) with mixed non-global/conflicting.
+  let ordNG := mkApp (mkConst ``MyCCPO.toMyOrd) (mkConst ``ccpoNoGlobal)
+  let ordNG := mkApp ordNG instNG
+  let pairX ← mkAppM ``PProd.mk #[mkConst ``ccpoNoGlobalVal, mkNatLit 0]
+  let hNGMeet := mkApp (mkConst ``ngMeetProof) ordNG
+  let hAltMeet := mkConst ``altNatMeetProof
+  let meetRes ← `(expr| myCombineMeet $pairX $hNGMeet $hAltMeet)
+  Meta.check meetRes
+  let meetArgs := meetRes.getAppArgs
+  check (meetArgs[2]! == ordNG && meetArgs[3]!.isConstOf ``altNatOrd)
+    "is_meet_pprod order must preserve both inst₁ and inst₂"
+
+  -- 4. Fallback when `tcMV` is in `expTy` (`@CarrierBox.ty Nat ?c` reduces only after TC).
+  let zeroNat := mkNatLit 0
+  let zeroInt ← mkAppOptM ``OfNat.ofNat #[mkConst ``Int, mkNatLit 0, none]
+  let carrierRes ← `(expr| acceptCarrierOut $zeroNat $zeroInt)
+  Meta.check carrierRes
+
+  -- 5. `?h`-hole non-assignment (`myFix ?f $hfAlt` fails cleanly, dependent hole stays open).
+  match ← tryBuild `(expr| myFix ?f $hfAlt) with
+  | .ok _ => throwError "expected splice type mismatch when ?f is an unassigned hole"
+  | .error msg =>
+    check (msg.contains "expr quotation splice type mismatch")
+      s!"expected splice type mismatch for `myFix ?f`, got: {msg}"
+
+  let pAlt2 := mkConst ``altNatBoxed2
+  let depHoleRes ← `(expr| withDepHoleBox2 ?h $pAlt2)
+  Meta.check depHoleRes
+  let depArgs := depHoleRes.getAppArgs
+  check (depArgs[1]!.isConstOf ``altNatBoxTag2)
+    "dependent hole + splice must preserve splice-unified instance"
+  let holeMV := depArgs[2]!.mvarId!
+  let isSO := match (← holeMV.getDecl).kind with | .syntheticOpaque => true | _ => false
+  check (!(← holeMV.isAssigned) && isSO)
+    "dependent ?h hole must remain unassigned .syntheticOpaque"
+
+  -- 6. Caller `.syntheticOpaque` mvar is never assigned by `assignSyntheticOpaque := true`.
+  let callerF ← mkFreshExprMVar
+    (some (← mkArrow (mkConst ``Nat) (mkConst ``Nat))) .syntheticOpaque
+  match ← tryBuild `(expr| myFix $callerF $hfAlt) with
+  | .ok _ => throwError "expected splice type mismatch when caller .syntheticOpaque != Nat.succ"
+  | .error msg =>
+    check (msg.contains "expr quotation splice type mismatch")
+      s!"unexpected error for caller .syntheticOpaque splice: {msg}"
+  check (!(← callerF.mvarId!.isAssigned))
+    "caller .syntheticOpaque mvar must remain unassigned after failed trial isDefEq"
+
+  -- 7. `outParam` preservation: `/reducible` rejects alias, caller `?unkMV` gives mismatch,
+  --    and combined `outParam` + deferred TC rejects alias while accepting valid instance.
+  let aliasVal ← mkFreshExprMVar (some (mkConst ``MyIntAlias))
+  match ← tryBuild `(expr/reducible| useOutTag $zeroNat $aliasVal) with
+  | .ok _ => throwError "/reducible outParam must reject semireducible MyIntAlias"
+  | .error msg =>
+    check (msg.contains "expr quotation splice type mismatch")
+      s!"expected splice type mismatch for /reducible outParam, got: {msg}"
+
+  let unkTy ← mkFreshExprMVar (some (mkSort 1))
+  let unkVal ← mkFreshExprMVar (some unkTy)
+  match ← tryBuild `(expr| useOutTag $zeroNat $unkVal) with
+  | .ok _ => throwError "caller ?unkTy mvar must fail outParam splice check"
+  | .error msg =>
+    check (msg.contains "expr quotation splice type mismatch")
+      s!"expected splice type mismatch (not TC synth error) for caller ?unkTy, got: {msg}"
+  check (!(← unkTy.mvarId!.isAssigned)) "caller ?unkTy must stay unassigned"
+
+  let badCombined ← mkAppOptM ``PProd.mk #[mkConst ``MyIntAlias, mkApp2 (mkConst ``BoxedTag2)
+    (mkConst ``Nat) (mkConst ``altNatBoxTag2), aliasVal, pAlt2]
+  match ← tryBuild `(expr/reducible| useOutAndLocalTC $zeroNat $badCombined) with
+  | .ok _ => throwError "combined /reducible outParam + deferred TC must still reject MyIntAlias"
+  | .error msg =>
+    check (msg.contains "expr quotation splice type mismatch")
+      s!"unexpected error in combined outParam + deferred TC failure: {msg}"
+  let goodCombined ← mkAppOptM ``PProd.mk #[mkConst ``Int, mkApp2 (mkConst ``BoxedTag2)
+    (mkConst ``Nat) (mkConst ``altNatBoxTag2), zeroInt, pAlt2]
+  let goodCombRes ← `(expr/reducible| useOutAndLocalTC $zeroNat $goodCombined)
+  Meta.check goodCombRes
+  check (goodCombRes.getAppArgs[3]!.isConstOf ``altNatBoxTag2)
+    "combined outParam + deferred TC must preserve deferred splice instance"
+
+  -- 8. Delayed-assigned metavariable in `(f, hf)` survives trial `isDefEq` & fails cleanly.
+  let (lamMV, pendingMV) ← withLocalDeclD `x (mkConst ``Nat) fun x => do
+    let hole ← mkFreshExprMVar (some (mkConst ``Nat)) .syntheticOpaque
+    let lam ← mkFreshExprMVar (some (← mkArrow (mkConst ``Nat) (mkConst ``Nat)))
+    assignDelayedMVar lam.mvarId! #[x] hole.mvarId!
+    return (lam, hole)
+  let delayedOrd ← mkAppOptM ``MyCCPO.toMyOrd #[mkConst ``Nat, mkConst ``altNatCCPO]
+  let hfDelayed ← mkFreshExprMVar
+    (some (mkApp3 (mkConst ``MyMono) (mkConst ``Nat) delayedOrd lamMV))
+  let delayedRes ← `(expr| myFix $lamMV $hfDelayed)
+  Meta.check delayedRes
+  check (delayedRes.getAppArgs[1]!.isConstOf ``altNatCCPO)
+    "delayed-assigned splice must preserve conflicting non-global instance"
+  check (!(← pendingMV.mvarId!.isAssigned))
+    "delayed-assigned pending mvar must stay unassigned"
+  match ← tryBuild `(expr| myFix $fNat $hfDelayed) with
+  | .ok _ => throwError "expected splice type mismatch between Nat.succ and delayed lamMV"
+  | .error msg =>
+    check (msg.contains "expr quotation splice type mismatch")
+      s!"unexpected error comparing Nat.succ vs delayed lamMV: {msg}"
+  check (!(← pendingMV.mvarId!.isAssigned))
+    "failed trial isDefEq must leave delayed pending mvar unassigned"
+
+end SpliceReachableTCOrderAndSafety
+
 end ExprQuotBuildTest
