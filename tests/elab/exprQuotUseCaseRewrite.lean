@@ -8,7 +8,8 @@ A tiny arithmetic normalizer and a few goal-transforming tactics built from `exp
 - `natStep?`: consecutive single-column arms, automatically indexed by a discrimination tree,
   each returning the rewritten term and an equality proof built from a term template;
 - `nat_norm`: contextual `rewrite` driven by `subterms`, `kabstract` and `MVarId.rewrite`;
-- `succ_to_add`: contextual `change` via `ExprContext.fill` and `replaceTargetDefEq`;
+- `succ_to_add`: contextual `change` (even under quantifiers) via `subtermsUnderBinders` and
+  `ExprContext.fill`;
 - `split_bool_match`: case analysis on `matchDiscriminants` filtered by a typed pattern;
 - `and_skeleton`: proof skeletons whose `?l`/`?r` holes become the new goals;
 - how the matching relation (`/structural`, `/reducible`, `/instances`, `/defeq`, `±flags`,
@@ -47,10 +48,13 @@ elab "nat_norm" : tactic => withMainContext do
 example (a b : Nat) : (a + 0) * 1 + (b - b) + 0 * (a * 0) = a := by
   nat_norm
 
-/-- `succ_to_add`: change the first `Nat.succ n` in the target into the defeq `n + 1`. -/
+/--
+`succ_to_add`: change the first `Nat.succ n` (including under binders via `subtermsUnderBinders`)
+into the defeq `n + 1`.
+-/
 elab "succ_to_add" : tactic => withMainContext do
   let goal ← getMainGoal
-  for case (`(expr| Nat.succ ?n), ctx) in subterms (← getMainTarget) do
+  for case (`(expr| Nat.succ ?n), ctx) in subtermsUnderBinders (← getMainTarget) do
     replaceMainGoal [← goal.replaceTargetDefEq (ctx.fill (← `(expr| ($n : Nat) + 1)))]
     return
   throwError "succ_to_add: no `Nat.succ` found"
@@ -58,6 +62,12 @@ elab "succ_to_add" : tactic => withMainContext do
 example (n : Nat) : Nat.succ n = n + 1 := by
   succ_to_add
   guard_target =ₛ n + 1 = n + 1
+  rfl
+
+example : ∀ n, Nat.succ n = n + 1 := by
+  succ_to_add
+  guard_target =ₛ ∀ n, n + 1 = n + 1
+  intro
   rfl
 
 /-- `split_bool_match`: case on the first Boolean `match` discriminant that is a local. -/

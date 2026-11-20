@@ -7,7 +7,7 @@ import Lean
   numeral literals) and maximally shared term building;
 - a custom `sym =>` tactic (`even_sym`) dispatching on the goal with `/sym` patterns through the
   `MonadSym` instance of `GrindTacticM`;
-- `#check_pattern`, `trace.Meta.Match.expr`, error hints, and the `exprQuot` linters.
+- `#check_pattern`, `trace.Meta.Match.expr`, error hints, and all four `linter.exprQuot.*` linters.
 -/
 
 namespace ExprQuotSymDiag
@@ -139,5 +139,59 @@ def forgotExprKeyword (e : Expr) : Nat :=
   match e with
   | `(?x + 1) => 1
   | _ => 0
+
+/--
+warning: pattern collapses under `reducible [+inst, +beta, +zeta, +proj, +eta] (items: none)`
+to `?v`, matching arbitrary expressions; remove the redex/unfolding or use `/structural` without
+contracting the redex
+
+Note: This linter can be disabled with `set_option linter.exprQuot.collapsedPattern false`
+-/
+#guard_msgs (whitespace := lax) in
+set_option linter.exprQuot.collapsedPattern true in
+def collapsedSubtypeVal (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr/reducible| Subtype.val (Subtype.mk (?v : Nat) _)) => let _ := v; return true
+  | _ => return false
+
+/--
+info: pattern: ⟨?v, _⟩.val
+collapsed normal form: ?v
+relation: reducible [+inst, +beta, +zeta, +proj, +eta] (items: none)
+binders: ?v : Nat (first-order)
+pins: none
+wildcards:
+  var #0 : Nat → Prop [unresolved implicit @ `Subtype.val` arg #1 (implicit),
+    `Subtype.mk` arg #1 (implicit); captured (repeated)]
+  var #2 : _ ?v [explicit `_`/`?_` @ `Subtype.mk` arg #3 (explicit); not captured]
+fixed instances: none
+polymorphic instances: none
+universe params: none
+closed proofs: none
+indexing: eligible (DiscrTree keys: [*])
+-/
+#guard_msgs (whitespace := lax) in
+set_option linter.exprQuot.collapsedPattern false in
+#check_pattern `(expr/reducible| Subtype.val (Subtype.mk (?v : Nat) _))
+
+/--
+warning: type ascription `(?x : Nat)` is not checked at runtime under `/structural`; use
+`/reducible`, check the type explicitly, or remove the ascription
+
+Note: This linter can be disabled with `set_option linter.exprQuot.uncheckedType false`
+-/
+#guard_msgs (whitespace := lax) in
+set_option linter.exprQuot.uncheckedType true in
+def uncheckedBinderType (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr| (?x : Nat)) => let _ := x; return true
+  | _ => return false
+
+#guard_msgs in
+set_option linter.exprQuot.uncheckedType true in
+def checkedBinderType (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr/reducible| (?x : Nat)) => let _ := x; return true
+  | _ => return false
 
 end ExprQuotSymDiag

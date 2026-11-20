@@ -9,18 +9,21 @@ user-facing syntax, semantics, and porting idioms, see [expr_quot.md](expr_quot.
 - **`Lean.Meta.ExprPattern`** (`src/Lean/Meta/ExprPattern.lean`):
   Runtime representation, matching engines, template instantiation, indexing, and sources:
   - Relations and site caching: `ExprMatchEngine`, `ExprMatchItem`, `ExprMatchFlags`,
-    `ResolvedExprMatchFlags`, `ExprMatchRel`, `ResolvedExprMatchRel`, `resolvedRelCacheRef`
+    `ResolvedExprMatchFlags`, `ExprMatchRel`, `ResolvedExprMatchRel`,
+    `ExprMatchRel.validateUnfoldableConst`, `resolvedRelCacheRef`
     (`ExprMatchRel.resolveStaticCached`), `ResolvedExprMatchRel.withLocalItems`.
-  - Patterns and engines: `ExprPattern`, `PatHeadGuard`, `ExprPattern.compile`, `matchStructural?`,
-    `matchDefEq?`, `MonadSym`, `matchSymCore?`, CPS dispatchers (`matchOrElse`, `matchSiteOrElse`,
-    `matchResolvedOrElse`, `matchSymSiteOrElse`, `matchSymResolvedOrElse`), and `DiscrTree`
-    dispatchers (`matchIndexedOrElse`, `matchSymIndexedOrElse`).
+  - Patterns and engines: `ExprPattern`, `PatHeadGuard`, `ExprPattern.compile`,
+    `ExprPattern.collapsedNormalForm?`, `matchStructural?`, `matchDefEq?`, `MonadSym`,
+    `matchSymCore?`, CPS dispatchers (`matchOrElse`, `matchSiteOrElse`, `matchResolvedOrElse`,
+    `matchSymSiteOrElse`, `matchSymResolvedOrElse`), and `DiscrTree` dispatchers
+    (`matchIndexedOrElse`, `matchSymIndexedOrElse`).
   - Serialization and templates: `ExprTemplate`, `ExprTemplateVarKind`, 6-bit ASCII DAG codec
     (`ExprPattern.encode`/`decode`, `ExprTemplate.encode`/`decode`), `inspectClassGoalInputs?`,
     `validateTempHolePlans`, `materializeHolePlans`, `ExprTemplate.instantiateResolved`/`Site`,
     and `SymExtension`-cached `/sym` runtime (`exprSymPatExt`, `exprSymTmplExt`, `exprSymIdxExt`).
-  - Goal and expression sources: `ExprContext` (`ExprContext.fill`), `localHypTypes`,
-    `localHypDecls`, `MVarId.firstHyp?`/`firstHyp`, `subterms`, `matchDiscriminants`.
+  - Goal and expression sources: `ExprContext` (`ExprContext.binders`, `ExprContext.fill`),
+    `localHypTypes`, `localHypDecls`, `MVarId.firstHyp?`/`firstHyp`, `subterms`,
+    `subtermsUnderBinders`, `matchDiscriminants`.
 - **`Lean.Elab.ExprQuot`** (`src/Lean/Elab/ExprQuot.lean`):
   Macro expansion (`expandMatchModulo`, `expandDoMatchModulo`), relation elaboration
   (`elabExprMatchRel`), pattern preprocessing and elaboration (`elabExprQuotHoleApp`,
@@ -49,7 +52,8 @@ user-facing syntax, semantics, and porting idioms, see [expr_quot.md](expr_quot.
     `compileExprMatch`.
   - `src/Lean/Meta/Sym/Pattern.lean`: `mkPatternCoreFromVars` and `mkPatternFromLambda`.
   - `src/Lean/Linter/Init.lean`, `Elab/Quotation/Util.lean`, `Elab/Quotation.lean`:
-    `linter.exprQuot.syntaxHole`, `linter.exprQuot.numeralDefaulting`, `elabStxQuot`, and
+    `linter.exprQuot.syntaxHole`, `linter.exprQuot.numeralDefaulting`,
+    `linter.exprQuot.collapsedPattern`, `linter.exprQuot.uncheckedType`, `elabStxQuot`, and
     error-only `checkSyntaxHoleInStxMatch` in `elabMatchSyntax`.
 
 ---
@@ -586,7 +590,7 @@ diverging from `Meta.isDefEq` and breaking nonlinear structural patterns such as
 
 ---
 
-## ADR-010: Binder-Descending Subterm Iteration (subtermsUnderBinders)
+## ADR-010: Binder-Descending Subterm Iteration (`subtermsUnderBinders`)
 
 **Status:** Accepted
 
@@ -625,3 +629,110 @@ open expressions with loose `.bvar`s would break `Expr.eqv`, `inferType`, and `E
 - `subtermsUnderBinders` loop bodies see fully well-typed closed subterms in an extended
   `LocalContext` with automatic outer-to-inner re-abstraction in `ctx.fill`, while callers know via
   `SubtermsUnderBinders.toArray`'s docstring that eager collection exits the binder scopes.
+
+---
+
+## ADR-011: Orthogonal Projection Encodings, Non-Unfoldable Constant Rejection, and Collapsed-Pattern Linting
+
+**Status:** Accepted
+
+**Context:**
+Structure projections in Lean `Expr`s take two distinct representations: surface syntax `s.val`
+elaborates to the projection function `@Subtype.val _ _ s`, whereas `whnf`, `unfold`, or `cases`
+produce kernel `.proj ``Subtype 0 s`. Under `/structural`, users sometimes conflate `+proj`
+(contracting `.proj S i (S.mk ...)`) with `[S.field]` (unfolding `S.field` to `.proj S i`), or
+attempt to place non-unfoldable constants (such as theorems like `Subtype.property`, constructors,
+or recursors) inside `[items]` lists where they would silently behave as no-ops. Conversely,
+combining `[S.field]` and `+proj` (or using `/reducible` / `/defeq`) on patterns such as
+`Subtype.val (Subtype.mk ?v _)` or `id ?x` reduces the pattern itself to a bare variable `?v` that
+matches arbitrary expressions.
+
+**Decision:**
+- **Keep `+proj` and `[S.field]` strictly orthogonal**:
+  - `+proj` in `ExprMatchFlags` governs only constructor-projection redex contraction (`projectCore?`),
+    whereas `[S.field]` governs unfolding the projection definition `S.field` to `.proj S i`.
+  - Keep `/reducible -proj` available when `Meta.isDefEq` should unfold projection definitions
+    while preserving constructor-projection redexes intact in the scrutinee.
+  - When `@S.field` fails against kernel `.proj S i` under `/structural`, emit an actionable
+    `trace.Meta.Match.expr` hint (`projection function S.field vs kernel projection; add [S.field]`).
+- **Reject non-unfoldable `[items]` constants at compile time and runtime**:
+  - `ExprMatchRel.validateUnfoldableConst` (`src/Lean/Meta/ExprPattern.lean`), invoked from both
+    `elabExprMatchRel` (`src/Lean/Elab/ExprQuot.lean`) and `resolveStaticCore`, requires
+    `ConstantInfo.defnInfo` (`hasValue`). Theorems, constructors, inductive types, recursors,
+    axioms, opaque constants, and quotient primitives raise a clear error instead of becoming
+    silent no-ops.
+- **Warn on collapsing patterns without altering runtime semantics**:
+  - Implement `ExprPattern.collapsedNormalForm?` (`collapsedStructStep?` and `collapsedDefEqHead?`
+    in `ExprPattern.lean`) to detect when a non-variable pattern reduces under its own relation to a
+    bare pattern variable or variable-headed application.
+  - Emit a `linter.exprQuot.collapsedPattern` warning (default `true`) from
+    `elabExprQuotPatternCore` and print `collapsed normal form: ...` in `#check_pattern`, while
+    leaving the underlying matching relation completely faithful.
+
+**Alternatives Considered:**
+1. *Having `+proj` automatically unfold structure projection functions*: breaks syntactic
+   distinctions between `@S.field` and `.proj`, preventing patterns from matching only one form or
+   contracting `.proj` redexes without unfolding surface wrappers.
+2. *Silently ignoring theorems/constructors in `[items]`*: misleads users into thinking
+   `[Subtype.property]` or `[Nat.succ]` has an unfolding effect when matching `.proj`.
+3. *Rejecting collapsing patterns as hard errors or rewriting them silently*: breaks legitimate
+   parameterized macros or experiments where the author knows the reduction behavior and only wants
+   a diagnostic signal.
+
+**Consequences & Trade-offs:**
+- Clear separation between definition unfolding (`[S.field]`), constructor-projection contraction
+  (`+proj`), and unreduced redex matching (`/reducible -proj`).
+- Non-definitions in `[items]` fail fast at elaboration time, and vacuous patterns such as
+  `` `(expr/reducible| Subtype.val (Subtype.mk ?v _)) `` or `` `(expr/defeq| id ?x) `` surface an
+  immediate lint warning and `#check_pattern` explanation without distorting matching semantics.
+
+---
+
+## ADR-012: Syntactic `/structural` Binder Type Discipline, Rigid Caller Metavariables, and Explicit v1 Scope Boundaries
+
+**Status:** Accepted
+
+**Context:**
+Users writing `` `(expr| (?x : T)) `` or `` `(expr| (?x : ?T)) `` under `/structural` often expect
+type ascriptions to restrict matched expressions by type; similarly, users encountering unassigned
+caller metavariables in a scrutinee or trying to match arbitrary-arity heads (`?g ..`),
+same-constructor equations (`?C _ = ?C _`), or unifying holes (`+assign`) expect predictable,
+documented semantics. Performing `inferType` on every structural capture would destroy `/structural`'s
+`O(|pattern|)` guarantee, while silently dropping type-only binders or mutating caller metavariables
+would cause subtle soundness and backtracking bugs.
+
+**Decision:**
+- **Keep `/structural` strictly `O(|pattern|)` without `inferType` on captures**:
+  - Under `/structural`, `elabExprQuotPatternCore` enforces `patBodyMentionsVar` at compile time,
+    rejecting type-only binders such as `(?x : ?T)` or `(?f : ?A → ?B) ?x` (directing users to
+    `/reducible` or explicit `inferType` calls).
+  - Run `isBVarConstrained` over explicit `(?x : T)` ascriptions in `/structural` patterns and emit
+    `linter.exprQuot.uncheckedType` (default `true`) whenever `T` is not embedded into a constrained
+    position in the elaborated pattern body (such as `(?x : Nat)` alone, `(?P : Prop) → (?Q : Prop)`,
+    or after `[Not]` unfolds `¬ ?A`).
+- **Keep caller metavariables rigid across all engines**:
+  - Execute matching inside `withNewMCtxDepth` across `/structural`, `isDefEq` engines, and `/sym`
+    so `match` is purely observational and never mutates caller metavariables inside scrutinees or
+    `$e` pins. Tactic writers wanting unification invoke `Meta.isDefEq`, `MVarId.apply`, or
+    `MVarId.assumptionCore` explicitly.
+- **Maintain explicit v1 syntax and scope boundaries**:
+  - Allow concrete constant-head `f ..` patterns, but reject `..` after pattern variables or pins
+    (`?g ..` / `$g ..`) at compile time via `ensureNoEllipsisInHoleArgs` (directing callers to
+    `Expr.getAppFn` / `Expr.getAppArgs`).
+  - Omit special `?C _ = ?C _` same-constructor syntax and `+assign` mutating pattern binders in v1
+    in favor of explicit `match` + `Meta.isConstructorApp'?` / `Meta.injection` and explicit
+    `Meta.isDefEq`.
+
+**Alternatives Considered:**
+1. *Calling `inferType` + `isDefEq` on every `(?x : T)` capture in `/structural`*: turns `O(|pattern|)`
+   syntactic AST matching into type inference + unification on every match arm.
+2. *Allowing mutating `+assign` pattern binders*: couples pure pattern matching to `MCtx` side
+   effects, making arm ordering and backtracking fragile.
+3. *Supporting `?g ..` by synthesizing variable-length argument arrays*: complicates binder arity
+   and `DiscrTree` indexing for little benefit over `e.getAppFn` / `e.getAppArgs`.
+
+**Consequences & Trade-offs:**
+- `/structural` stays reliably `O(|pattern|)` and side-effect-free on the caller's `MetavarContext`.
+- Users receive immediate compile-time errors on type-only `/structural` binders and `?g ..`
+  heads, plus `linter.exprQuot.uncheckedType` warnings whenever an explicit `: T` annotation in a
+  `/structural` pattern would otherwise go unchecked at runtime.

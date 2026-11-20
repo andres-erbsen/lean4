@@ -102,3 +102,8 @@ export ELAN_TOOLCHAIN=lean4
 ```
 to persist these changes for the lifetime of the current shell, which will affect any processes spawned from it such as VS Code started via `code .`.
 If you use a setup where you cannot directly start your editor from the command line, such as VS Code Remote, you might want to consider using [direnv](https://direnv.net/) together with an editor extension for it instead so that you can put the lines above into `.envrc`.
+
+## Metaprogramming Subsystems
+
+- [Quasi-Quoted `Expr` Patterns](expr_quot.md): surface syntax, matching engines, term construction, goal/subterm streams, and diagnostics for `` `(expr[rel]| ...) ``.
+- [Expr Quotation Architectural Decision Records](expr_quot_adr.md): internal module map and architectural design rationale.
