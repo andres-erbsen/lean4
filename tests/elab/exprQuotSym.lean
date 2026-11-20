@@ -698,4 +698,37 @@ run_meta SymM.run do
 
 end RuntimeRejectDisabledFlag
 
+section SymSpliceAssignedInstancePreservation
+
+private class SymBoxTag (α : Type) where
+  tag : Nat
+
+private structure SymBoxed (α : Type) [SymBoxTag α] : Prop where
+  ok : True
+
+private def combineSymBoxed {α : Type} [SymBoxTag α]
+    (_ : SymBoxed α) (_ : SymBoxed α) : True := .intro
+
+private axiom symNoGlobalType : Type
+@[instance_reducible] private def symLocalTagInst : SymBoxTag symNoGlobalType := ⟨7⟩
+@[instance_reducible] private def symAltNatTagInst : SymBoxTag Nat := ⟨42⟩
+private instance : SymBoxTag Nat := ⟨0⟩
+private axiom symNoGlobalBoxed : @SymBoxed symNoGlobalType symLocalTagInst
+private axiom symAltNatBoxed : @SymBoxed Nat symAltNatTagInst
+
+#guard_msgs in
+#eval show MetaM Unit from SymM.run do
+  let pNG := mkConst ``symNoGlobalBoxed
+  let resNG ← `(expr/sym| combineSymBoxed $pNG $pNG)
+  Meta.check resNG
+  check (Sym.isSameExpr resNG (← Sym.shareCommon resNG))
+    "sym template result with non-global instance must be maximally shared"
+  let pAlt := mkConst ``symAltNatBoxed
+  let resAlt ← `(expr/sym| combineSymBoxed $pAlt $pAlt)
+  Meta.check resAlt
+  check (resAlt.getAppArgs[1]!.isConstOf ``symAltNatTagInst)
+    "sym template must not clobber splice-unified instance with global instance"
+
+end SymSpliceAssignedInstancePreservation
+
 end ExprQuotSymTest

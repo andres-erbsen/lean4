@@ -2853,6 +2853,8 @@ private def resolveReadyTCsGo {m : Type → Type} [Monad m] [MonadLiftT MetaM m]
     let mut stillPending : Array MVarId := #[]
     let mut progressed := false
     for tcMV in pending do
+      if ← liftM (m := MetaM) tcMV.isAssignedOrDelayedAssigned then
+        continue
       let tcTy ← liftM (m := MetaM) (instantiateMVars (← tcMV.getDecl).type)
       if ← liftM (m := MetaM) (isTCGoalReady baseDepth tcTy) then
         synth tcMV tcTy
@@ -2868,6 +2870,21 @@ private def resolveReadyTCs {m : Type → Type} [Monad m] [MonadLiftT MetaM m]
     (synth : MVarId → Expr → m Unit) (baseDepth : Nat) (pending : Array MVarId) :
     m (Array MVarId) :=
   resolveReadyTCsGo synth baseDepth pending.size pending
+
+private def resolveRemainingTCs {m : Type → Type} [Monad m] [MonadLiftT MetaM m]
+    (synth : MVarId → Expr → m Unit) (baseDepth : Nat) (pendingTCs : Array MVarId) :
+    m Unit := do
+  if pendingTCs.isEmpty then
+    return ()
+  let remaining ← resolveReadyTCs synth baseDepth pendingTCs
+  for tcMV in remaining do
+    if ← liftM (m := MetaM) tcMV.isAssignedOrDelayedAssigned then
+      continue
+    let tcTy ← liftM (m := MetaM) (instantiateMVars (← tcMV.getDecl).type)
+    if hasTempMVar (← liftM (m := MetaM) getMCtx) baseDepth tcTy then
+      liftM (m := MetaM) <| throwError
+        "expr quotation failed to resolve dependent instance{indentExpr tcTy}"
+    synth tcMV tcTy
 
 /--
 Instantiate a compiled `ExprTemplate` under a pre-resolved relation `rel` and runtime splice
@@ -2929,13 +2946,7 @@ def ExprTemplate.instantiateResolved (tmpl : ExprTemplate) (rel : ResolvedExprMa
         let mv ← mkFreshExprMVar (some expTy) .syntheticOpaque
         subst := subst.push mv
         holePlaceholders := holePlaceholders.push (i, mv.mvarId!, userName?)
-    if !pendingTCs.isEmpty then
-      pendingTCs ← resolveReadyTCs synthTCWithError baseDepth pendingTCs
-      for tcMV in pendingTCs do
-        let tcTy ← instantiateMVars (← tcMV.getDecl).type
-        if hasTempMVar (← getMCtx) baseDepth tcTy then
-          throwError "expr quotation failed to resolve dependent instance{indentExpr tcTy}"
-        synthTCWithError tcMV tcTy
+    resolveRemainingTCs synthTCWithError baseDepth pendingTCs
     let mctx ← getMCtx
     for u in us do
       let u' ← instantiateLevelMVars u
@@ -3277,13 +3288,7 @@ private def instantiateSymCore (siteId : Name) (tmpl : ExprTemplate)
         let mv ← mkFreshExprMVar (some expTy) .syntheticOpaque
         subst := subst.push mv
         holePlaceholders := holePlaceholders.push (i, mv.mvarId!, userName?)
-    if !pendingTCs.isEmpty then
-      pendingTCs ← resolveReadyTCs synthSymTCWithError baseDepth pendingTCs
-      for tcMV in pendingTCs do
-        let tcTy ← instantiateMVars (← tcMV.getDecl).type
-        if hasTempMVar (← getMCtx) baseDepth tcTy then
-          throwError "expr quotation failed to resolve dependent instance{indentExpr tcTy}"
-        synthSymTCWithError tcMV tcTy
+    resolveRemainingTCs synthSymTCWithError baseDepth pendingTCs
     let mctx ← getMCtx
     let mut usResolved : List Level := []
     for u in us do

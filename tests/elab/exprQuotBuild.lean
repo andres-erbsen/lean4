@@ -713,4 +713,53 @@ info: "`(expr/reducible [+Nat.add, -Nat.mul] -eta| 1 + 2)"
 
 end PrettyPrinterSpacing
 
+/-! ### Splice-unified `[inst]` preservation (no clobbering by `synthInstance`) -/
+
+section SpliceAssignedInstancePreservation
+
+private class LocalBoxTag (α : Type) where
+  tag : Nat
+
+private structure BoxedTag (α : Type) [LocalBoxTag α] : Prop where
+  ok : True
+
+private def combineBoxedTags {α : Type} [LocalBoxTag α]
+    (_ : BoxedTag α) (_ : BoxedTag α) : True := .intro
+
+private def keepSingleBoxedTag {α : Type} [LocalBoxTag α] (_ : BoxedTag α) : True := .intro
+
+private axiom noGlobalCarrier : Type
+@[instance_reducible] private def altNatTagInst : LocalBoxTag Nat := ⟨42⟩
+private instance : LocalBoxTag Nat := ⟨0⟩
+private axiom noGlobalBoxed (inst : LocalBoxTag noGlobalCarrier) : @BoxedTag noGlobalCarrier inst
+private axiom altNatBoxed : @BoxedTag Nat altNatTagInst
+private axiom globalNatBoxed : @BoxedTag Nat inferInstance
+
+#guard_msgs in
+#eval show MetaM Unit from do
+  -- Trace A: single & multi splice with a non-global instance on `noGlobalCarrier`.
+  let instNG := mkApp2 (mkConst ``LocalBoxTag.mk) (mkConst ``noGlobalCarrier) (mkNatLit 7)
+  let pNG := mkApp (mkConst ``noGlobalBoxed) instNG
+  let singleNG ← `(expr| keepSingleBoxedTag $pNG)
+  Meta.check singleNG
+  let pairNG ← `(expr| combineBoxedTags $pNG $pNG)
+  Meta.check pairNG
+  check (pairNG.getAppArgs[1]! == instNG)
+    "single/pair non-global instance unified from splice must be preserved"
+  -- Trace B: conflicting global `LocalBoxTag Nat` must NOT overwrite `altNatTagInst`!
+  let pAlt := mkConst ``altNatBoxed
+  let pairAlt ← `(expr| combineBoxedTags $pAlt $pAlt)
+  Meta.check pairAlt
+  check (pairAlt.getAppArgs[1]!.isConstOf ``altNatTagInst)
+    "conflicting global instance must not clobber splice-unified instance"
+  -- Conflicting second splice must fail cleanly with splice type mismatch.
+  let pGlobal := mkConst ``globalNatBoxed
+  match ← tryBuild `(expr| combineBoxedTags $pAlt $pGlobal) with
+  | .ok _ => throwError "expected splice type mismatch when second splice uses different instance"
+  | .error msg =>
+    check (msg.contains "expr quotation splice type mismatch")
+      s!"unexpected mismatch message for conflicting instances: {msg}"
+
+end SpliceAssignedInstancePreservation
+
 end ExprQuotBuildTest
