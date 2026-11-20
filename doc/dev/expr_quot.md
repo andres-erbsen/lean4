@@ -477,6 +477,168 @@ def findQuantifiedAddZero (hyps : Array (Expr × Expr)) : MetaM (Option (Expr ×
   which breaks on inaccessible `h✝` names (if syntax is required, call `Term.exprToSyntax` inside
   `withMainContext`).
 
+## Programmatic Tactic Combinators and `sym =>` Helpers
+
+For multi-step automation in `TacticM` and `GrindTacticM` (`sym =>` tactics), Lean provides
+focused goal-loop combinators, rule-caching helpers, keyed simplification persistence, and
+configuration elaborators that compose directly with `` `(expr[rel]| ...) `` and `firstHyp`.
+
+### Goal-Loop and Subgoal Combinators (`Tactic` & `Grind`)
+
+```lean
+-- `src/Lean/Elab/Tactic/Basic.lean`:
+def Tactic.whileGoals (step : TacticM Unit) : TacticM Unit
+def Tactic.andThenSubgoals (tac : TacticM Unit) (first : TacticM Unit)
+    (rest : TacticM Unit := pure ()) : TacticM Unit
+
+-- `src/Lean/Elab/Tactic/Grind/Sym.lean`:
+public def Grind.whileGoals (step : GrindTacticM Unit) (headBeta : Bool := false) :
+    GrindTacticM Unit
+public def Grind.andThenSubgoals (tac : GrindTacticM Unit) (first : GrindTacticM Unit)
+    (rest : GrindTacticM Unit := pure ()) : GrindTacticM Unit
+```
+
+- **Per-step goal focus (`whileGoals`)**: on every iteration, `whileGoals` pops the head unsolved
+  goal `g :: gs`, checks system cancellation (`Core.checkSystem`), sets the active goal list to
+  `[g]`, runs `step` (after calling `headBetaMainGoal` if `Grind.whileGoals` has
+  `headBeta := true`), and prepends the produced `subgoals` before `gs` (`subgoals ++ gs`).
+  Because `[g]` is isolated, `step` cannot accidentally inspect or mutate sibling goals, and
+  checks such as `(← getUnsolvedGoals).isEmpty` reliably detect when `g` itself has been closed.
+- **Asymmetric subgoal continuation (`andThenSubgoals`)**: runs `tac` under `focus`, executes
+  `first` focused on subgoal `0` (`[g]`), and then runs `rest` focused on each remaining subgoal
+  `g ∈ gs`, **skipping any subgoal already assigned/solved by `first`** (`if (← getUnsolvedGoals).isEmpty then continue`).
+  This avoids manual goal counting when applying lemmas whose first premise assigns a witness or
+  type metavariable appearing in later subgoals (for example, `refl?` solving `n + k = ?m`
+  automatically closes the trailing `?m : Nat` goal).
+
+Comparing against Rocq `Ltac`:
+
+| Rocq `Ltac` | Lean 4 Counterpart | Key Difference |
+|---|---|---|
+| `repeat tac` | `whileGoals step` | Focuses `[g]` per iteration; prepends new subgoals depth-first |
+| `tac; [t1 \| t2..]` | `andThenSubgoals tac first rest` | Skips remaining subgoals already assigned/closed by `first` |
+
+### `GrindTacticM` Goal, Rule, Search, and Simplification Helpers
+
+```lean
+-- `src/Lean/Elab/Tactic/Grind/Basic.lean` (in `Lean.Elab.Tactic.Grind`):
+def getMainGoal : GrindTacticM Goal
+def replaceMainGoal (goals : List Goal) : GrindTacticM Unit
+
+-- `src/Lean/Elab/Tactic/Grind/Sym.lean` (in `Lean.Elab.Tactic.Grind`):
+public def intro1 (internalize : Bool := false) : GrindTacticM (FVarId × Meta.Grind.Goal)
+public def getMainTarget : GrindTacticM Expr
+public def headBetaMainGoal : GrindTacticM Unit
+public def getOrCreateBackwardRule (declName : Name) : GrindTacticM Sym.BackwardRule
+public def getOrCreateBackwardRuleFromTerm (term : Syntax) : GrindTacticM Sym.BackwardRule
+public def applyBackwardRule (rule : Sym.BackwardRule) : GrindTacticM Unit
+public def applyDecl (declName : Name) : GrindTacticM Unit
+public def refl? : GrindTacticM Bool
+public def assumption? : GrindTacticM Bool
+
+public def firstHyp? (f : Expr → Expr → GrindTacticM α)
+    (reverse : Bool := true) (except : List Expr := []) : GrindTacticM (Option α)
+public def firstHyp (f : Expr → Expr → GrindTacticM α)
+    (reverse : Bool := true) (except : List Expr := []) : GrindTacticM α
+
+public def simpGoal (goal : Meta.Grind.Goal) (methods : Sym.Simp.Methods)
+    (config : Sym.Simp.Config := {}) (cacheKey? : Option Name := none) :
+    GrindTacticM (Option Meta.Grind.Goal)
+public def simpMainGoal (methods : Sym.Simp.Methods) (config : Sym.Simp.Config := {})
+    (cacheKey? : Option Name := none) : GrindTacticM Bool
+
+-- `src/Lean/Meta/Sym/Simp/Forall.lean` (in `Lean.Meta.Sym.Simp`):
+public def simpExistsEq : Simproc
+```
+
+Semantics and nuances:
+- **Assigned-goal hygiene (`getMainGoal`, `replaceMainGoal`)**: `getMainGoal` skips leading goals
+  that are `inconsistent` or whose `mvarId` is already assigned (`goal.mvarId.isAssigned`), and
+  `replaceMainGoal` filters solved/inconsistent entries out of `goals` and drops leading solved
+  tail goals.
+- **Cached backward rules**: `applyDecl` looks up or builds a `Sym.BackwardRule` via
+  `getOrCreateBackwardRule` (`State.cache.backwardRuleName`). `getOrCreateBackwardRuleFromTerm`
+  uses the name cache for unshadowed global identifiers and elaborates arbitrary terms in the main
+  goal's context cached by `(startPos, endPos)` byte range (write `@rule` when passing a
+  polymorphic term identifier whose implicit metavariables must not remain uninstantiated).
+- **`Grind.firstHyp` error preservation**: `firstHypCore` runs under
+  `Term.withoutTacticIncrementality true <| Term.withoutErrToSorry <| withoutRecover`, snapshots
+  `Grind.saveState` and `msgsBefore`, and runs each arm inside **non-backtracking `Grind.tryCatch`**
+  (rather than `<|>` / `Grind.tryCatchRestore`) so `Core.getMessageLog` retains any logged abort
+  error long enough for `Tactic.firstHypInnerError?` to extract the last non-`failure` error
+  before `s.restore (restoreInfo := true)` atomically rolls back `Term.SavedState`, `grindState`,
+  `symState`, `goals`, `cache`, and `InfoTree`s.
+- **Persistent `simpGoal` / `simpMainGoal` cache (`cacheKey?`)**: when `cacheKey? := some k`,
+  `State.cache.simpState` threads a persistent `Sym.Simp.State` under `{ variant := k, extras := #[] }`.
+  Because this `SimpCacheKey` space is shared with `sym => simp` (which keys by the `Sym.simp`
+  variant name, or `.anonymous` for the default variant), `k` **must not** be `.anonymous`,
+  **must not** collide with any registered `Sym.simp` variant name, and **must uniquely identify**
+  its `(methods, config)` pair.
+- **Opt-in `Lean.Meta.Sym.Simp.simpExistsEq`**: intended as a post-method (`Simproc`); simplifies
+  `∃ x, x = a'` and `∃ x, a' = x` to `True`, and `∃ x, x = a' ∧ p x`, `∃ x, a' = x ∧ p x`,
+  `∃ x, p x ∧ x = a'`, and `∃ x, p x ∧ a' = x` to `p a'` whenever `a'` does not mention `x`.
+- **Tactic options (`declare_core_config_elab`)**: define a `Config` structure and generate
+  `declare_core_config_elab elabMyConfig MyConfig` (returning `CoreM MyConfig`, which lifts into
+  `GrindTacticM` and `TacticM`) to support standard `+cache` / `+eager` / `(flag := ...)`
+  `optConfig` arguments on custom `grind` and `tactic` syntax.
+
+### Before / After Symbolic Stepping Example
+
+Before (manual goal threading, repeated `instantiateMVars` / `headBeta`, and uncached `SimpM`):
+
+```lean
+-- Manual recursive loop in `GrindTacticM`:
+partial def stepManual (evalM postM : Sym.Simp.Methods) : GrindTacticM Unit := do
+  let goal :: rest ← getUnsolvedGoals | return
+  setGoals [goal]
+  let ty := (← instantiateMVars (← goal.mvarId.getType)).headBeta
+  match ty with
+  | `(expr/sym| Exec .skip _ _) => evalGrindTactic (← `(grind| apply Exec.skip))
+  | `(expr/sym| Exec (.add _) _ _) =>
+    evalGrindTactic (← `(grind| apply Exec.add))
+    -- Manually simplify subgoal 0, close with refl?, and skip solved `?m` subgoals...
+  | _ => ...
+  let subgoals ← getUnsolvedGoals
+  setGoals (subgoals ++ rest)
+  stepManual evalM postM
+```
+
+After (using `declare_core_config_elab`, `whileGoals (headBeta := true)`, `andThenSubgoals`,
+`applyDecl`, `simpMainGoal (cacheKey? := ...)`, `refl?`, `assumption?`, `Grind.firstHyp`, and
+`Sym.Simp.simpExistsEq`):
+
+```lean
+open Lean Meta Elab Lean.Elab.Tactic.Grind
+
+structure ExecCfg where
+  cache : Bool := false
+  eager : Bool := false
+
+declare_core_config_elab elabExecCfg ExecCfg
+
+def runExecSym (cfg : ExecCfg) (evalM postM : Sym.Simp.Methods)
+    (byInv : GrindTacticM Unit) : GrindTacticM Unit := do
+  let cacheKey? := if cfg.cache then some `myExecSymEval else none
+  let postKey? := if cfg.cache then some `myExecSymPost else none
+  let postM := { postM with post := postM.post.andThen Sym.Simp.simpExistsEq }
+  let side : GrindTacticM Unit := do
+    if ← simpMainGoal evalM (cacheKey? := cacheKey?) then return
+    if ← refl? then return
+    if ← assumption? then return
+    byInv
+  let rest : GrindTacticM Unit := do
+    if cfg.eager then discard <| simpMainGoal evalM (cacheKey? := cacheKey?)
+  whileGoals (headBeta := true) do
+    match ← getMainTarget with
+    | `(expr/sym| Exec .skip _ _)     => applyDecl ``Exec.skip
+    | `(expr/sym| Exec (.seq _ _) _ _) => applyDecl ``Exec.seq_cps
+    | `(expr/sym| Exec (.add _) _ _)   => andThenSubgoals (applyDecl ``Exec.add) side rest
+    | `(expr/sym| ∀ _, _)              => discard intro1
+    | _ =>
+      if ← simpMainGoal postM (cacheKey? := postKey?) then return
+      focus <| evalGrindTactic (← `(grind| finish))
+```
+
 ## Diagnostics and Linters
 
 ### `#check_pattern` Output
@@ -552,19 +714,45 @@ projection encoding hints):
 
 ## Tutorials and Use-Case Showcases
 
-- [exprQuotTutorial.lean](../../tests/elab/exprQuotTutorial.lean): end-to-end literate tutorial
-  covering patterns, templates, context streams, diagnostics, and Rocq `Ltac` comparisons.
-- [exprQuotUseCaseMatchGoal.lean](../../tests/elab/exprQuotUseCaseMatchGoal.lean): ports of Rocq
-  `match goal` tactics (`chain_mp`, `split_ands`, `clear_refl`, `inst_forall`, `close_by_let`,
-  `try_hyps`).
-- [exprQuotUseCaseRewrite.lean](../../tests/elab/exprQuotUseCaseRewrite.lean): `nat_norm`,
-  contextual `change`, `matchDiscriminants`, proof holes, relation comparison, and
-  `subtermsUnderBinders`.
-- [exprQuotUseCaseSymDiag.lean](../../tests/elab/exprQuotUseCaseSymDiag.lean): `/sym` offsets,
-  `sym =>` tactic dispatch, `#check_pattern`, traces, error hints, and linters.
+- [exprQuotTutorial.lean](../../tests/elab/exprQuotTutorial.lean): end-to-end literate tutorial,
+  ending with a chapter on `Tactic.whileGoals`/`andThenSubgoals` and `sym =>` symbolic stepping.
+- Core PR #1 showcases:
+  - [exprQuotUseCaseMatchGoal.lean](../../tests/elab/exprQuotUseCaseMatchGoal.lean): Rocq
+    `match goal` idioms (`chain_mp`, `split_ands`, `clear_refl`, `inst_forall`, `close_by_let`,
+    `try_hyps`).
+  - [exprQuotUseCaseRewrite.lean](../../tests/elab/exprQuotUseCaseRewrite.lean): `nat_norm`,
+    contextual `change`, `matchDiscriminants`, proof holes, relation comparison, and
+    `subtermsUnderBinders`.
+  - [exprQuotUseCaseSymDiag.lean](../../tests/elab/exprQuotUseCaseSymDiag.lean): `/sym` offsets,
+    `sym =>` dispatch, `#check_pattern`, traces, error hints, and linters.
+- Tactic ergonomics, symbolic execution, and Rocq/Separation-Logic showcases:
+  - [exprQuotUseCaseSymExec.lean](../../tests/elab/exprQuotUseCaseSymExec.lean): symbolic
+    executor in `GrindTacticM` (`whileGoals (headBeta := true)`, `andThenSubgoals`, `applyDecl`,
+    cached `simpMainGoal`, `simpExistsEq`, `declare_core_config_elab`).
+  - [exprQuotUseCaseTacticErgonomics.lean](../../tests/elab/exprQuotUseCaseTacticErgonomics.lean):
+    lambda-calculus `typecheck` (`whileGoals` / `andThenSubgoals`) and `refute_intros`.
+  - [exprQuotUseCaseStdpp.lean](../../tests/elab/exprQuotUseCaseStdpp.lean): `coq-std++`-style
+    `fast_done`, `simplify_eq`, `forall_and` (`subtermsUnderBinders`), and `naive_solver`.
+  - [exprQuotUseCaseStructTact.lean](../../tests/elab/exprQuotUseCaseStructTact.lean):
+    Verdi `StructTact`-style `break_match`, `break_if`, `tuple_inversion`, `find_rewrite`, and
+    `smash_handler`.
+  - [exprQuotUseCaseFSetDec.lean](../../tests/elab/exprQuotUseCaseFSetDec.lean): Rocq Stdlib
+    `MSetDecide` / `fsetdec` with indexed `/structural +inst` AST classification and
+    `subtermsUnderBinders`.
+  - [exprQuotUseCaseRocqStdlib.lean](../../tests/elab/exprQuotUseCaseRocqStdlib.lean): Rocq
+    `Init.Tactics` & `Program.Equality` (`contradict` via `[Not, Ne]`, `destruct_all` via
+    `localHypDecls`, `simpl_subtype_proj`, `simpl_heqs`).
+  - [exprQuotUseCaseSepLogic.lean](../../tests/elab/exprQuotUseCaseSepLogic.lean): separation-logic
+    `emp`/`sep` reification, frame cancellation across existential witnesses, and `ExprTemplate`
+    entailment proofs.
+  - [exprQuotUseCaseSfAuto.lean](../../tests/elab/exprQuotUseCaseSfAuto.lean): *Software
+    Foundations* `find_rwd`/`find_eqn` (Miller `?L x = ?R x`) and VFA `bdestruct`/`bdall`.
+  - [exprQuotUseCaseFrap.lean](../../tests/elab/exprQuotUseCaseFrap.lean): *FRAP* verified
+    propositional sequent reflection (`my_tauto`) and `invertHyp` transition invariants.
 - Additional test suites: [exprQuotMatch.lean](../../tests/elab/exprQuotMatch.lean),
   [exprQuotBuild.lean](../../tests/elab/exprQuotBuild.lean),
   [exprQuotSym.lean](../../tests/elab/exprQuotSym.lean),
   [exprQuotDiag.lean](../../tests/elab/exprQuotDiag.lean),
-  [firstHyp.lean](../../tests/elab/firstHyp.lean), and
-  [forCase.lean](../../tests/elab/forCase.lean).
+  [firstHyp.lean](../../tests/elab/firstHyp.lean),
+  [forCase.lean](../../tests/elab/forCase.lean), and
+  [sym_simpExistsEq.lean](../../tests/elab/sym_simpExistsEq.lean).

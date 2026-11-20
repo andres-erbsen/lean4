@@ -13,6 +13,7 @@ A tour of Lean's `` `(expr[/rel]| ...) `` syntax for matching, inspecting, and b
    `subtermsUnderBinders`, `matchDiscriminants`).
 6. Diagnostics (`#check_pattern`, `trace.Meta.Match.expr`, `linter.exprQuot.*`).
 7. Concise comparison with Rocq `Ltac` (`match goal` / `context[...]`).
+8. Goal loops and symbolic stepping (`whileGoals`, `andThenSubgoals`, and `GrindTacticM`).
 -/
 
 namespace ExprQuotTutorial
@@ -331,5 +332,84 @@ elab "use_hyp_under" : tactic => do
 example (P : Prop) (Q R : Nat → Prop) (hp : P) (h : ∀ n, (P → Q n) ∧ R n) : Q 3 ∧ R 3 := by
   use_hyp_under
   exact h 3
+
+/-! ## Chapter 8: Goal Loops and Symbolic Stepping
+
+`whileGoals step` focuses `[g]` on each iteration, checks cancellation, and prepends resulting
+subgoals ahead of remaining siblings. Unlike Rocq's `repeat tac` (which succeeds silently when `tac`
+fails), `whileGoals` loops until no goals remain or `step` throws. `andThenSubgoals tac first rest`
+generalizes Rocq's fixed-arity `tac; [t1 | t2]`: it runs `first` on subgoal `0` and `rest` on each
+remaining sibling, skipping subgoals already solved by `first` (such as an unassigned `?m : Nat`
+witness goal resolved while solving an earlier premise).
+
+`GrindTacticM` (`sym =>` mode) mirrors these with `Grind.whileGoals (headBeta := true)`,
+`Grind.andThenSubgoals`, `applyDecl`, `Grind.firstHyp?`, `refl?`, `assumption?`, and
+`simpMainGoal` (with a unique `cacheKey?`), plus opt-in `Sym.Simp.simpExistsEq` (`∃ x, x = a ∧ p x`
+↦ `p a`). -/
+
+inductive MiniCmd where | skip | add (k : Nat) | seq (p q : MiniCmd)
+
+inductive MiniExec : MiniCmd → Nat → (Nat → Prop) → Prop
+  | skip : post n → MiniExec .skip n post
+  | add : n + k = m → post m → MiniExec (.add k) n post
+  | seq : MiniExec p n mid → (∀ m, mid m → MiniExec q m post) → MiniExec (.seq p q) n post
+
+theorem MiniExec.seq_cps (h : MiniExec p n fun m => MiniExec q m post) :
+    MiniExec (.seq p q) n post := .seq h fun _ hm => hm
+
+partial def miniExecStep : TacticM Unit := withMainContext do
+  let applyRule (r : Name) : TacticM Unit := do
+    replaceMainGoal (← (← getMainGoal).apply (← mkConstWithFreshMVarLevels r))
+  match ← getMainTarget with
+  | `(expr| MiniExec .skip _ _) => applyRule ``MiniExec.skip
+  | `(expr| MiniExec (.seq _ _) _ _) => applyRule ``MiniExec.seq_cps
+  | `(expr| MiniExec (.add _) _ _) =>
+    -- `MiniExec.add` yields `[n + k = ?m, post ?m, ?m : Nat]`; `refl` instantiates `?m`,
+    -- so `andThenSubgoals` skips the solved `?m : Nat` witness goal automatically.
+    andThenSubgoals (applyRule ``MiniExec.add) (first := do (← getMainGoal).refl)
+  | _ => (← getMainGoal).refl <|> (← getMainGoal).assumption
+
+elab "mini_exec" : tactic => whileGoals miniExecStep
+
+example (n : Nat) : MiniExec (.seq (.add 2) (.seq (.add 3) .skip)) n (· = (n + 2) + 3) := by
+  mini_exec
+
+section SymStepping
+open Lean.Elab.Tactic.Grind
+
+syntax (name := miniSym) "mini_sym" : grind
+
+@[grind_tactic miniSym] def evalMiniSym : GrindTactic := fun _ => do
+  let rw ← Sym.mkSimprocFor #[``Nat.add_assoc, ``eq_self, ``and_true, ``true_and]
+    Sym.Simp.dischargeSimpSelf
+  let evalM : Sym.Simp.Methods := { post := Sym.Simp.evalGround.andThen rw }
+  let postM : Sym.Simp.Methods := { post := evalM.post.andThen Sym.Simp.simpExistsEq }
+  let side : GrindTacticM Unit := do
+    if ← simpMainGoal evalM (cacheKey? := `miniSymEval) then return
+    if ← refl? then return
+    if ← assumption? then return
+    throwError "mini_sym: cannot discharge{indentExpr (← getMainTarget)}"
+  whileGoals (headBeta := true) do
+    match ← getMainTarget with
+    | `(expr/sym| MiniExec .skip _ _) => applyDecl ``MiniExec.skip
+    | `(expr/sym| MiniExec (.seq _ _) _ _) => applyDecl ``MiniExec.seq_cps
+    | `(expr/sym| MiniExec (.add _) _ _) =>
+      andThenSubgoals (applyDecl ``MiniExec.add) side (pure ())
+    | _ =>
+      let g ← getMainGoal
+      if ← simpMainGoal postM (cacheKey? := `miniSymPost) then return
+      if (← getMainGoal).mvarId != g.mvarId then return
+      let some () ← firstHyp? (fun h ty => do
+          let tgt ← getMainTarget
+          let `(expr/sym| $tgt) := ty | failure
+          (← getMainGoal).mvarId.assign h
+          replaceMainGoal [])
+        | throwError "mini_sym: stuck at{indentExpr (← getMainTarget)}"
+
+example (n : Nat) (P : Nat → Prop) (hP : P (n + 5)) :
+    MiniExec (.seq (.add 2) (.seq (.add 3) .skip)) n fun m => ∃ k, k = 5 ∧ m = n + k ∧ P m := by
+  sym => mini_sym
+
+end SymStepping
 
 end ExprQuotTutorial

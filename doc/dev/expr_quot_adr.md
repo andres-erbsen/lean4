@@ -1,8 +1,9 @@
 # Architectural Decision Records: `expr` Quotations
 
 This document records the internal module map and architectural decisions behind Lean's
-quasi-quoted `Expr` pattern and term-building subsystem (`` `(expr[rel]| ...) ``). For
-user-facing syntax, semantics, and porting idioms, see [expr_quot.md](expr_quot.md).
+quasi-quoted `Expr` pattern and term-building subsystem (`` `(expr[rel]| ...) ``) and its
+companion goal-combinator and `sym =>` tactic ergonomics helpers. For user-facing syntax,
+semantics, and porting idioms, see [expr_quot.md](expr_quot.md).
 
 ## Internal Module and Extension Map
 
@@ -43,13 +44,20 @@ user-facing syntax, semantics, and porting idioms, see [expr_quot.md](expr_quot.
   `#check_pattern` command elaborator (`elabCheckPattern`), isolated above `Lean.Elab.Command`,
   `Lean.Elab.ExprQuot`, and `Lean.Meta.ExprPattern` so `Lean.Elab.BuiltinCommand` has no
   `ExprQuot` dependency while `#check_pattern` retains full `/sym` `DiscrTree` key inspection.
-- **`Lean.Elab.Tactic.FirstHyp`** (`src/Lean/Elab/Tactic/FirstHyp.lean`):
-  `import Lean.Meta.ExprPatternCore` (`SymM`-free); `TacticM` backtracking hypothesis search
-  (`firstHyp?`, `firstHyp`) with atomic `SavedState` rollback and `sorry`/info-tree hygiene.
-- **`Lean.Elab.Tactic.Grind.Sym`** (`src/Lean/Elab/Tactic/Grind/Sym.lean`):
-  Generic low-priority `{m} [MonadLiftT GrindTacticM m] : Meta.MonadSym m` instance, kept out of
-  `Grind.Basic` to avoid import cycles and preserve `MonadLiftT MetaM GrindTacticM`.
-- **Parser, Elaborator, `Sym`, and Diagnostics Hooks**:
+- **`Lean.Elab.Tactic.Basic` & `Lean.Elab.Tactic.FirstHyp`** (`src/Lean/Elab/Tactic/Basic.lean`,
+  `FirstHyp.lean`):
+  `import Lean.Meta.ExprPatternCore` (`SymM`-free); `TacticM` goal-loop combinators
+  (`whileGoals`, `andThenSubgoals`) and backtracking hypothesis search (`firstHyp?`, `firstHyp`)
+  with atomic `SavedState` rollback, `firstHypInnerError?`, and `sorry`/info-tree hygiene.
+- **`Lean.Elab.Tactic.Grind.Basic` & `Sym`** (`src/Lean/Elab/Tactic/Grind/Basic.lean`, `Sym.lean`):
+  `GrindTacticM` goal management (`getMainGoal`, `replaceMainGoal` skipping assigned/inconsistent
+  goals; `tryCatch` vs. backtracking `tryCatchRestore`), low-priority
+  `{m} [MonadLiftT GrindTacticM m] : Meta.MonadSym m` instance, `Grind.whileGoals`,
+  `Grind.andThenSubgoals`, `Grind.firstHyp?`/`firstHyp`, programmatic `Sym` tactic helpers
+  (`getMainTarget`, `headBetaMainGoal`, `intro1`, `getOrCreateBackwardRule`,
+  `getOrCreateBackwardRuleFromTerm`, `applyBackwardRule`, `applyDecl`, `refl?`, `assumption?`),
+  and keyed persistent `simpGoal`/`simpMainGoal`.
+- **Parser, Elaborator, `Sym`, Config, and Diagnostics Hooks**:
   - `src/Lean/Parser/Term.lean`, `Do.lean`, `Command.lean`: `exprQuot`, `exprQuotRel`,
     `matchModulo`, `doMatchModulo`, `doForCaseDecl`, `doForProofCaseDecl`, `checkPattern`,
     internal node kinds `exprQuotHoleApp` and `exprQuotPatSlot`.
@@ -59,7 +67,10 @@ user-facing syntax, semantics, and porting idioms, see [expr_quot.md](expr_quot.
   - `src/Lean/Elab/Match.lean`, `Elab/BuiltinDo/Match.lean`: parameterized alt-view elaboration
     (`elabMatchAltViewCore`, `elabMatchAltViewsCore`, `elabDoMatchAltCore`) forwarding to
     `compileExprMatch`.
-  - `src/Lean/Meta/Sym/Pattern.lean`: `mkPatternCoreFromVars` and `mkPatternFromLambda`.
+  - `src/Lean/Meta/Sym/Pattern.lean` & `Sym/Simp/Forall.lean`: `mkPatternCoreFromVars`,
+    `mkPatternFromLambda`, and opt-in `Sym.Simp.simpExistsEq`.
+  - `src/Lean/Elab/ConfigEval/Commands.lean`: `declare_core_config_elab` for `optConfig` parsing
+    in custom `sym =>` and `tactic` commands.
   - `src/Lean/Linter/Init.lean`, `Elab/Quotation/Util.lean`, `Elab/Quotation.lean`:
     `linter.exprQuot.syntaxHole`, `linter.exprQuot.numeralDefaulting`,
     `linter.exprQuot.collapsedPattern`, `linter.exprQuot.uncheckedType`, `elabStxQuot`, and
@@ -758,3 +769,104 @@ would cause subtle soundness and backtracking bugs.
 - Users receive immediate compile-time errors on type-only `/structural` binders and `?g ..`
   heads, plus `linter.exprQuot.uncheckedType` warnings whenever an explicit `: T` annotation in a
   `/structural` pattern would otherwise go unchecked at runtime.
+
+---
+
+## ADR-013: Focused Programmatic Goal Combinators over Ad-Hoc Surface Tactic Wrappers
+
+**Status:** Accepted
+
+**Context:**
+Multi-step goal automation written with `` `(expr[rel]| ...) `` and `firstHyp` frequently needs
+two control-flow primitives: (1) repeatedly dispatching on the head goal until all subgoals are
+solved, and (2) running a tactic that spawns premises (`tac`) and applying one continuation (`first`)
+to the primary subgoal and a different continuation (`rest`) to remaining premises—where proving
+`first` may assign metavariables representing later witness goals. In an unfocused loop exposing
+all queued sibling goals, a step inspecting `(← getUnsolvedGoals).isEmpty` sees `false` whenever
+an outer sibling remains; likewise, dispatching `rest` onto a remaining subgoal that `first`
+already assigned fails unnecessarily.
+
+**Decision:**
+- Provide `Tactic.whileGoals` / `Tactic.andThenSubgoals` (`src/Lean/Elab/Tactic/Basic.lean`) and
+  `Grind.whileGoals` / `Grind.andThenSubgoals` (`src/Lean/Elab/Tactic/Grind/Sym.lean`).
+- In both `whileGoals` variants, pop the head unsolved goal `g :: gs`, check cancellation
+  (`Core.checkSystem`), set the goal list to `[g]` so `step` cannot observe sibling goals,
+  optionally run `headBetaMainGoal` when `Grind.whileGoals` receives `headBeta := true`, run
+  `step`, and prepend `subgoals ++ gs`.
+- In both `andThenSubgoals` variants, run `tac` inside `focus`, run `first` focused on subgoal `0`,
+  and then iterate over remaining subgoals `gs`, setting `setGoals [g]` and skipping any subgoal
+  already assigned/solved (`if (← getUnsolvedGoals).isEmpty then continue`) before running `rest`.
+- Keep these combinators in `TacticM` / `GrindTacticM` rather than proliferating ad-hoc surface
+  tactic syntax wrappers, so they compose orthogonally with `firstHyp`, `subterms`, and
+  `` `(expr[rel]| ...) `` match blocks.
+
+**Alternatives Considered:**
+1. *Leaving sibling goals `gs` visible during `whileGoals` iterations*: leaks outer branches into
+   `step` and breaks steps that check `(← getUnsolvedGoals).isEmpty` after closing `[g]`.
+2. *Proliferating bespoke surface tactics for goal loops and subgoal sequencing*: duplicates
+   tactic parser/elaborator surface while locking users out of arbitrary `MetaM`/`GrindTacticM`
+   control flow.
+
+**Consequences & Trade-offs:**
+- Goal-directed loops and asymmetric premise handlers stay compact, isolated to `[g]`, and immune
+  to trailing witness-goal errors when `first` assigns later metavariables.
+- Depth-first goal ordering (`subgoals ++ gs`) matches Lean's standard focus-first discipline and
+  Rocq's goal-stack order without manual goal slicing.
+
+---
+
+## ADR-014: Programmatic `GrindTacticM` Helpers, Keyed `Sym.Simp.State` Persistence, and Opt-In `simpExistsEq`
+
+**Status:** Accepted
+
+**Context:**
+Writing symbolic executors and custom `sym =>` tactics in `GrindTacticM` previously required
+stringing together `evalGrindTactic` syntax quotations (`(grind| apply ...)`, `(grind| simp ...)`)
+for basic steps, failed when assigned witness goals lingered in `goals`, lacked `Grind.firstHyp`
+backtracking, could not persist a `Sym.Simp.State` across programmatic `Sym.Simp.simp` calls, and
+had no built-in way to eliminate equality-pinned existentials (`∃ x, x = a' ∧ p x`) in `Sym.Simp`.
+
+**Decision:**
+- **Harden goal filtering and expose programmatic `GrindTacticM` primitives**:
+  - Update `Grind.getMainGoal` and `Grind.replaceMainGoal` (`src/Lean/Elab/Tactic/Grind/Basic.lean`)
+    to skip inconsistent or already-assigned goals (`goal.inconsistent || (← goal.mvarId.isAssigned)`),
+    and use `restoreInfo := true` on `Grind.tryCatchRestore` (`MonadExcept`).
+  - Expose `getMainTarget`, `headBetaMainGoal`, `intro1`, `getOrCreateBackwardRule`,
+    `getOrCreateBackwardRuleFromTerm`, `applyBackwardRule`, `applyDecl`, `refl?`, and
+    `assumption?` in `src/Lean/Elab/Tactic/Grind/Sym.lean`, reusing `State.cache.backwardRuleName`
+    and `backwardRuleSyntax`.
+- **Add `Grind.firstHyp?` / `Grind.firstHyp` with error-preserving rollback**:
+  - Mirror `Tactic.firstHyp?` / `Tactic.firstHyp` inside `Term.withoutTacticIncrementality true`,
+    `Term.withoutErrToSorry`, and `withoutRecover`, using non-backtracking `Grind.tryCatch` so
+    `Tactic.firstHypInnerError?` reads logged abort errors from `Core.getMessageLog` before
+    `Grind.SavedState.restore (restoreInfo := true)` rolls back `Term.SavedState`, `grindState`,
+    `symState`, `goals`, `cache`, and `InfoTree`s.
+- **Share `State.cache.simpState` via explicit `cacheKey?`**:
+  - Add `simpGoal` and `simpMainGoal` accepting `cacheKey? : Option Name := none`. When `some k`
+    is supplied, thread `Sym.Simp.State` through `State.cache.simpState` under
+    `{ variant := k, extras := #[] } : SimpCacheKey`. Document clearly that `k` shares `SimpCacheKey`
+    with `sym => simp` variants and must be non-`.anonymous`, non-variant, and unique per
+    `(methods, config)` pair.
+- **Keep `Sym.Simp.simpExistsEq` opt-in and reuse `declare_core_config_elab`**:
+  - Place `simpExistsEq : Simproc` in `src/Lean/Meta/Sym/Simp/Forall.lean` as an opt-in
+    post-method (rewriting `∃ x, x = a'` / `a' = x` to `True` and `∃ x, x = a' ∧ p x` variants to
+    `p a'`) rather than adding it to `mkSimpDefaultMethods`, keeping zero overhead for ordinary
+    `Sym.simp` invocations.
+  - Delegate `sym =>` custom tactic options (`+cache`, `+eager`, etc.) to
+    `declare_core_config_elab` (`src/Lean/Elab/ConfigEval/Commands.lean`), whose `CoreM`
+    elaborator lifts cleanly into `GrindTacticM` and `TacticM`.
+
+**Alternatives Considered:**
+1. *Separate `Map` field on `Grind.Cache` for programmatic `simpGoal`*: duplicates cache storage
+   and invalidation logic for identical `Sym.Simp.State` maps.
+2. *Including `simpExistsEq` in default `mkSimpDefaultMethods`*: inspects every `Exists` node on
+   all `Sym.simp` runs even when users do not generate pinned existential postconditions.
+3. *Using backtracking `Grind.tryCatchRestore` inside `firstHypCore`*: clears `Core.getMessageLog`
+   before `firstHypInnerError?` can inspect abort-tactic errors for the final diagnostic message.
+
+**Consequences & Trade-offs:**
+- Custom `sym =>` tactics avoid `evalGrindTactic` syntax round-trips, share `BackwardRule` and
+  `Sym.Simp.State` caches across loop iterations, handle `optConfig` flags via standard
+  `declare_core_config_elab`, and report informative `firstHyp` errors without `InfoTree` leaks.
+- Programmatic `simpGoal`/`simpMainGoal` callers passing `cacheKey? := some k` are responsible for
+  choosing distinct non-`.anonymous`, non-variant keys for distinct `(methods, config)` pairs.
