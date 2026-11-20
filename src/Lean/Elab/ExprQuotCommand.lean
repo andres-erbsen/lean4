@@ -8,6 +8,7 @@ module
 prelude
 public import Lean.Elab.Command
 public import Lean.Elab.ExprQuot
+import Lean.Meta.ExprPattern
 
 public section
 
@@ -26,7 +27,8 @@ def elabCheckPattern : CommandElab := fun stx => do
   let tk := stx[0]
   let term := stx[1]
   withoutModifyingEnv <| runTermElabM fun vars => Term.withDeclName `_checkPattern do
-    let msg ← withRef tk <| Term.ExprQuot.inspectExprQuotPattern vars term
+    let msg ← withRef tk <|
+      Term.ExprQuot.inspectExprQuotPattern vars term Meta.ExprPattern.discTreeKeys?
     logInfoAt tk msg
 
 end Lean.Elab.Command

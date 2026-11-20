@@ -6,37 +6,46 @@ user-facing syntax, semantics, and porting idioms, see [expr_quot.md](expr_quot.
 
 ## Internal Module and Extension Map
 
-- **`Lean.Meta.ExprPattern`** (`src/Lean/Meta/ExprPattern.lean`):
-  Runtime representation, matching engines, template instantiation, indexing, and sources:
+- **`Lean.Meta.ExprPatternCore`** (`src/Lean/Meta/ExprPatternCore.lean`):
+  Core runtime representation, non-`/sym` matching engines, template instantiation, indexing,
+  and goal/subterm sources (zero `Lean.Meta.Sym.*` dependencies):
   - Relations and site caching: `ExprMatchEngine`, `ExprMatchItem`, `ExprMatchFlags`,
     `ResolvedExprMatchFlags`, `ExprMatchRel`, `ResolvedExprMatchRel`,
     `ExprMatchRel.validateUnfoldableConst`, `resolvedRelCacheRef`
     (`ExprMatchRel.resolveStaticCached`), `ResolvedExprMatchRel.withLocalItems`.
   - Patterns and engines: `ExprPattern`, `PatHeadGuard`, `ExprPattern.compile`,
-    `ExprPattern.collapsedNormalForm?`, `matchStructural?`, `matchDefEq?`, `MonadSym`,
-    `matchSymCore?`, CPS dispatchers (`matchOrElse`, `matchSiteOrElse`, `matchResolvedOrElse`,
-    `matchSymSiteOrElse`, `matchSymResolvedOrElse`), and `DiscrTree` dispatchers
-    (`matchIndexedOrElse`, `matchSymIndexedOrElse`).
+    `ExprPattern.collapsedNormalForm?`, `ExprPattern.discTreeKeysMeta?`, `matchStructural?`,
+    `matchDefEq?`, non-`/sym` CPS dispatchers (`matchOrElse`, `matchSiteOrElse`,
+    `matchResolvedOrElse`), and `DiscrTree` dispatcher (`matchIndexedOrElse`).
   - Serialization and templates: `ExprTemplate`, `ExprTemplateVarKind`, 6-bit ASCII DAG codec
     (`ExprPattern.encode`/`decode`, `ExprTemplate.encode`/`decode`), `inspectClassGoalInputs?`,
-    `validateTempHolePlans`, `materializeHolePlans`, `ExprTemplate.instantiateResolved`/`Site`,
-    and `SymExtension`-cached `/sym` runtime (`exprSymPatExt`, `exprSymTmplExt`, `exprSymIdxExt`).
+    `ExprTemplate.instantiateResolved`/`Site`, and `ExprPattern.Internal` helpers shared with
+    `Lean.Meta.ExprPattern`.
   - Goal and expression sources: `ExprContext` (`ExprContext.binders`, `ExprContext.fill`),
     `localHypTypes`, `localHypDecls`, `MVarId.firstHyp?`/`firstHyp`, `subterms`,
     `subtermsUnderBinders`, `matchDiscriminants`.
+- **`Lean.Meta.ExprPattern`** (`src/Lean/Meta/ExprPattern.lean`):
+  `public import Lean.Meta.ExprPatternCore` plus the `/sym` backend: `MonadSym`, `matchSymCore?`,
+  `/sym` CPS/indexed dispatchers (`matchSymSiteOrElse`, `matchSymResolvedOrElse`,
+  `matchSymIndexedOrElse`), `SymExtension`-cached `/sym` runtime (`exprSymPatExt`,
+  `exprSymTmplExt`, `exprSymIdxExt`), `ExprTemplate.instantiateSymResolved`/`Site`, and
+  `ExprPattern.discTreeKeys?` (handling `/sym` alongside core engines).
 - **`Lean.Elab.ExprQuot`** (`src/Lean/Elab/ExprQuot.lean`):
-  Macro expansion (`expandMatchModulo`, `expandDoMatchModulo`), relation elaboration
-  (`elabExprMatchRel`), pattern preprocessing and elaboration (`elabExprQuotHoleApp`,
+  `public import Lean.Meta.ExprPatternCore` (keeping `Elab.Match`, `Elab.Tactic.ElabTerm`, etc.
+  free of `SymM` while referencing `/sym` runtime names symbolically and guarding them on
+  `Lean.Meta.MonadSym`). Macro expansion (`expandMatchModulo`, `expandDoMatchModulo`), relation
+  elaboration (`elabExprMatchRel`), pattern preprocessing and elaboration (`elabExprQuotHoleApp`,
   `elabExprQuotPatSlot`, `elabExprQuotPattern`), per-module deduplication extensions
   (`exprPatExt`, `exprPatArrExt`, `exprTmplExt`), join-point `match` compiler
   (`compileExprMatch`), term-position template elaborator (`elabExprQuotTerm`), and diagnostics
   (`checkSyntaxHoleInExprMatchPatterns`, `checkNumeralDefaultingMVars`, `inspectExprQuotPattern`).
 - **`Lean.Elab.ExprQuotCommand`** (`src/Lean/Elab/ExprQuotCommand.lean`):
-  `#check_pattern` command elaborator (`elabCheckPattern`), isolated above `Lean.Elab.Command` and
-  `Lean.Elab.ExprQuot` so `Lean.Elab.BuiltinCommand` has no `ExprQuot` dependency.
+  `#check_pattern` command elaborator (`elabCheckPattern`), isolated above `Lean.Elab.Command`,
+  `Lean.Elab.ExprQuot`, and `Lean.Meta.ExprPattern` so `Lean.Elab.BuiltinCommand` has no
+  `ExprQuot` dependency while `#check_pattern` retains full `/sym` `DiscrTree` key inspection.
 - **`Lean.Elab.Tactic.FirstHyp`** (`src/Lean/Elab/Tactic/FirstHyp.lean`):
-  `TacticM` backtracking hypothesis search (`firstHyp?`, `firstHyp`) with atomic `SavedState`
-  rollback and `sorry`/info-tree hygiene.
+  `import Lean.Meta.ExprPatternCore` (`SymM`-free); `TacticM` backtracking hypothesis search
+  (`firstHyp?`, `firstHyp`) with atomic `SavedState` rollback and `sorry`/info-tree hygiene.
 - **`Lean.Elab.Tactic.Grind.Sym`** (`src/Lean/Elab/Tactic/Grind/Sym.lean`):
   Generic low-priority `{m} [MonadLiftT GrindTacticM m] : Meta.MonadSym m` instance, kept out of
   `Grind.Basic` to avoid import cycles and preserve `MonadLiftT MetaM GrindTacticM`.

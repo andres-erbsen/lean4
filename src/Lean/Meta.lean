@@ -63,4 +63,5 @@ public import Lean.Meta.CtorIdxHInj
 public import Lean.Meta.Sym
 public import Lean.Meta.MonadSimp
 public import Lean.Meta.HaveTelescope
+public import Lean.Meta.ExprPatternCore
 public import Lean.Meta.ExprPattern

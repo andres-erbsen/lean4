@@ -7,7 +7,7 @@ module
 
 prelude
 public import Lean.Elab.Tactic.Basic
-public import Lean.Meta.ExprPattern
+public import Lean.Meta.ExprPatternCore
 
 public section
 

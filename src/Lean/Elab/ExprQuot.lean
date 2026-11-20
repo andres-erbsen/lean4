@@ -6,7 +6,7 @@ Authors: Andres Erbsen
 module
 
 prelude
-public import Lean.Meta.ExprPattern
+public import Lean.Meta.ExprPatternCore
 public import Lean.Meta.Match.Match
 public import Lean.Elab.MatchAltView
 public import Lean.Elab.SyntheticMVars
@@ -275,6 +275,12 @@ def elabExprMatchRel (relStx : Syntax) (defaultEngine : ExprMatchEngine := .stru
   let mut engine : ExprMatchEngine := defaultEngine
   unless relStx[0].isNone do
     engine ← elabExprMatchEngine relStx[0][0]
+  if engine == .sym then
+    unless (← getEnv).contains `Lean.Meta.MonadSym do
+      throwError "expr quotation `/sym` requires `import Lean.Meta.ExprPattern`"
+  else
+    unless (← getEnv).contains `Lean.Meta.ResolvedExprMatchRel do
+      throwError "expr quotation requires `import Lean.Meta.ExprPatternCore`"
   let mut items : Array ExprMatchItem := #[]
   let mut localItems : Array (Bool × Expr) := #[]
   unless relStx[1].isNone do
@@ -1500,7 +1506,7 @@ private def buildMatchSiteError (failCall : Expr) (ex : Exception) (isSym : Bool
   let monadInst? ← trySynthInstance (← mkAppM ``Monad #[m])
   let liftInst? ←
     if isSym then
-      trySynthInstance (← mkAppM ``Meta.MonadSym #[m])
+      trySynthInstance (← mkAppM `Lean.Meta.MonadSym #[m])
     else
       trySynthInstance (← mkAppOptM ``MonadLiftT #[mkConst ``MetaM, m])
   if !(monadInst? matches .some _) || !(liftInst? matches .some _) then
@@ -1524,13 +1530,13 @@ private def buildSlotMatchCall (slot : CompiledExprSlot) (siteId : Name)
   if slot.rel.engine == .sym then
     if slot.rel.items.isEmpty && !slot.hasLocalItems then
       let resolvedRelExpr := quoteResolvedExprMatchRel slot.rel
-      mkAppM ``ExprPattern.matchSymResolvedOrElse
+      mkAppM `Lean.Meta.ExprPattern.matchSymResolvedOrElse
         #[siteIdExpr, patExpr, resolvedRelExpr, pinIdxsExpr, pinsExpr, scrutinee,
           onMatchLam, onFailLam]
     else
       let relExpr ← quoteExprMatchRel slot.rel
       let localItemsExpr := (slot.localItemsLam.beta ctxArgs)
-      mkAppM ``ExprPattern.matchSymSiteOrElse
+      mkAppM `Lean.Meta.ExprPattern.matchSymSiteOrElse
         #[siteIdExpr, patExpr, relExpr, pinIdxsExpr, pinsExpr, localItemsExpr, scrutinee,
           onMatchLam, onFailLam]
   else if slot.rel.items.isEmpty && !slot.hasLocalItems then
@@ -1767,7 +1773,7 @@ private def buildIndexedSlotRun (jpAlts : Array Expr) (alts : Array ExprMatchAlt
   try
     if rel0.engine == .sym then
       let resolvedRelExpr := quoteResolvedExprMatchRel rel0
-      mkAppM ``ExprPattern.matchSymIndexedOrElse
+      mkAppM `Lean.Meta.ExprPattern.matchSymIndexedOrElse
         #[siteIdExpr, patArrExpr, resolvedRelExpr, scrutinee, tryAtArr, onFailLam]
     else
       let relExpr ← quoteExprMatchRel rel0
@@ -2451,7 +2457,7 @@ type-class instances at run time, and instantiates `?h` / `?_` refine holes clea
         let mKnown ← instantiateMVars expTyInst.appFn!
         if !mKnown.hasMVar then
           let monadInst? ← trySynthInstance (← mkAppM ``Monad #[mKnown])
-          let symInst? ← trySynthInstance (← mkAppM ``Meta.MonadSym #[mKnown])
+          let symInst? ← trySynthInstance (← mkAppM `Lean.Meta.MonadSym #[mKnown])
           unless (monadInst? matches .some _) && (symInst? matches .some _) do
             throwErrorAt stx "expr quotation `/sym` requires a `[MonadSym]` monad \
               (e.g. `SymM` or `GrindTacticM`), got expected type{indentExpr expTy}"
@@ -2461,10 +2467,10 @@ type-class instances at run time, and instantiates `?h` / `?_` refine holes clea
       let mTy ← mkArrow (mkSort (.succ .zero)) (mkSort (.succ v))
       let mExpr ← mkFreshExprMVar (some mTy)
       let monadMV ← Term.mkInstMVar (← mkAppM ``Monad #[mExpr])
-      let symMV ← Term.mkInstMVar (← mkAppM ``Meta.MonadSym #[mExpr])
+      let symMV ← Term.mkInstMVar (← mkAppM `Lean.Meta.MonadSym #[mExpr])
       if rel.items.isEmpty && localItemExprs.isEmpty then
         let resolvedRelExpr := quoteResolvedExprMatchRel rel
-        pure <| mkAppN (mkConst ``ExprTemplate.instantiateSymResolved [v])
+        pure <| mkAppN (mkConst `Lean.Meta.ExprTemplate.instantiateSymResolved [v])
           #[mExpr, monadMV, symMV, siteIdExpr, tmplExpr, resolvedRelExpr, splicesArrExpr]
       else
         let relExpr ← quoteExprMatchRel rel
@@ -2472,7 +2478,7 @@ type-class instances at run time, and instantiates `?h` / `?_` refine holes clea
         let localItemList ← localItemExprs.toList.mapM fun (pos, e) =>
           mkAppM ``Prod.mk #[toExpr pos, e]
         let localItemsArrExpr ← mkArrayLit boolExprProd localItemList
-        pure <| mkAppN (mkConst ``ExprTemplate.instantiateSymSite [v])
+        pure <| mkAppN (mkConst `Lean.Meta.ExprTemplate.instantiateSymSite [v])
           #[mExpr, monadMV, symMV, siteIdExpr, tmplExpr, relExpr,
             splicesArrExpr, localItemsArrExpr]
     else if rel.items.isEmpty && localItemExprs.isEmpty then
@@ -2713,7 +2719,9 @@ where
   termination_by (sizeOf e, 1, 0)
 
 private def indexingStatusSummary (rel : ExprMatchRel) (hasLocalItems : Bool)
-    (pat : ExprPattern) : MetaM String := do
+    (pat : ExprPattern)
+    (discTreeKeysFn : ExprMatchRel → ExprPattern → MetaM (Option (Array DiscrTree.Key))) :
+    MetaM String := do
   if hasLocalItems then
     return "ineligible (local `$x` items force linear fallback)"
   if !rel.isIndexSound then
@@ -2723,7 +2731,7 @@ private def indexingStatusSummary (rel : ExprMatchRel) (hasLocalItems : Bool)
       | .reducible  => "disabled reduction flag prevents reducible `DiscrTree` indexing"
       | .sym        => "`/sym` requires default flags and no `[items]` for indexing"
     return s!"ineligible ({reason})"
-  let some keys ← pat.discTreeKeys? rel
+  let some keys ← discTreeKeysFn rel pat
     | return "ineligible"
   let keyStrs := keys.toList.map fun k => toString (format k)
   return s!"eligible (DiscrTree keys: [{", ".intercalate keyStrs}])"
@@ -2765,7 +2773,9 @@ its compiled relation, binders (with higher-order arities), pins, wildcards/impl
 fixed and pattern-bound instances, universe parameters, closed-proof fast-path entries, and
 `DiscrTree` indexing eligibility without running the term-builder template elaborator.
 -/
-def inspectExprQuotPattern (ctxFVars : Array Expr) (stx : Syntax) :
+def inspectExprQuotPattern (ctxFVars : Array Expr) (stx : Syntax)
+    (discTreeKeysFn : ExprMatchRel → ExprPattern → MetaM (Option (Array DiscrTree.Key)) :=
+      Meta.ExprPattern.discTreeKeysMeta?) :
     TermElabM MessageData := do
   let quotStx := unwrapExprQuotStx stx
   unless isExprQuot quotStx do
@@ -2834,7 +2844,7 @@ def inspectExprQuotPattern (ctxFVars : Array Expr) (stx : Syntax) :
       return s!"`{← ppExpr pf}` : `{← ppExpr ty}`"
     let localItemStxs := extractLocalItemStxs quotStx[2]
     let relDesc := formatRelSummary slot.rel localItemStxs
-    let idxDesc ← indexingStatusSummary slot.rel slot.hasLocalItems pat
+    let idxDesc ← indexingStatusSummary slot.rel slot.hasLocalItems pat discTreeKeysFn
     let fmtList (xs : Array String) : String :=
       if xs.isEmpty then "none" else ", ".intercalate xs.toList
     let wildcardsStr :=

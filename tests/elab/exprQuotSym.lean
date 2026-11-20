@@ -731,4 +731,23 @@ private axiom symAltNatBoxed : @SymBoxed Nat symAltNatTagInst
 
 end SymSpliceAssignedInstancePreservation
 
+section SymRuntimeNameResolution
+
+-- Verify every single-backtick `/sym` symbol name referenced in `Lean.Elab.ExprQuot` resolves.
+#guard_msgs in
+#eval show MetaM Unit from do
+  let env ← getEnv
+  for n in [
+    `Lean.Meta.MonadSym,
+    `Lean.Meta.ExprPattern.matchSymResolvedOrElse,
+    `Lean.Meta.ExprPattern.matchSymSiteOrElse,
+    `Lean.Meta.ExprPattern.matchSymIndexedOrElse,
+    `Lean.Meta.ExprTemplate.instantiateSymResolved,
+    `Lean.Meta.ExprTemplate.instantiateSymSite
+  ] do
+    unless env.contains n do
+      throwError "missing `/sym` runtime symbol in `Lean.Meta.ExprPattern`: {n}"
+
+end SymRuntimeNameResolution
+
 end ExprQuotSymTest
