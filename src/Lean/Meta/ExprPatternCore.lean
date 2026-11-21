@@ -1039,46 +1039,143 @@ private def etaExpandOne? (ctx : StructCtx) (t : Expr) : MetaM (Option Expr) := 
     return none
   catch _ => return none
 
+private def isInstDispatchArg (fi : FunInfo) (idx : Nat) : Bool :=
+  if h : idx < fi.paramInfo.size then
+    let p := fi.paramInfo[idx]
+    if p.isInstance then
+      true
+    else if !p.isExplicit then
+      Id.run do
+        for h₂ : k in (idx + 1)...fi.paramInfo.size do
+          if fi.paramInfo[k].isInstance && fi.paramInfo[k].backDeps.contains idx then
+            return true
+        return false
+    else
+      false
+  else
+    false
+
+private def hasDistinctInductHeads (env : Environment) (e₁ e₂ : Expr) : Bool :=
+  match e₁.getAppFn.consumeMData, e₂.getAppFn.consumeMData with
+  | .const c₁ _, .const c₂ _ =>
+    c₁ != c₂ &&
+    (match env.find? c₁, env.find? c₂ with
+     | some (.inductInfo _), some (.inductInfo _) => true
+     | _, _ => false)
+  | _, _ => false
+
 private def isInstArgAt (f : Expr) : MetaM Bool := do
   if f.hasLooseBVars then
     return false
   try
     let argIdx := f.getAppNumArgs
-    let fi ← getFunInfoNArgs f.getAppFn (argIdx + 1)
-    return (fi.paramInfo[argIdx]?).any (·.binderInfo.isInstImplicit)
+    let fi ← getFunInfo f.getAppFn
+    return isInstDispatchArg fi argIdx
   catch _ =>
     return false
 
-private def matchInstArgDefEq (ctx : StructCtx) (pa f a : Expr) : StructM Bool := do
+private def matchInstArgDefEq (ctx : StructCtx) (pa f a : Expr)
+    (bound : Array Expr) : StructM Bool := do
   unless ctx.flags.inst && !a.hasLooseBVars do
+    return false
+  let env ← getEnv
+  if hasDistinctInductHeads env pa a then
     return false
   unless ← isInstArgAt f do
     return false
   let st ← get
   let paVar := substAssigned pa st.vars ctx.pat.numVars
-  if paVar.hasLooseBVars then
-    return false
-  let paInst := substAssignedLevels paVar ctx.pat.levelParams st.levels
-  withNewMCtxDepth <| withTransparency .instances do
-    if ctx.pat.levelParams.isEmpty || !hasPatLevelParam ctx.pat.levelParams paInst then
-      isDefEq paInst a
-    else
-      let mut unassignedNames : List Name := []
-      let mut unassignedIdxs : List Nat := []
-      let mut idx := 0
-      for p in ctx.pat.levelParams do
-        if (st.levels.getD idx none).isNone then
-          unassignedNames := p :: unassignedNames
-          unassignedIdxs := idx :: unassignedIdxs
-        idx := idx + 1
-      let fresh ← unassignedNames.mapM fun _ => mkFreshLevelMVar
-      let paPrepared := paInst.instantiateLevelParams unassignedNames fresh
+  if !paVar.hasLooseBVars then
+    if hasDistinctInductHeads env paVar a then
+      return false
+    let paInst := substAssignedLevels paVar ctx.pat.levelParams st.levels
+    withNewMCtxDepth <| withTransparency .instances do
+      if ctx.pat.levelParams.isEmpty || !hasPatLevelParam ctx.pat.levelParams paInst then
+        isDefEq paInst a
+      else
+        let mut unassignedNames : List Name := []
+        let mut unassignedIdxs : List Nat := []
+        let mut idx := 0
+        for p in ctx.pat.levelParams do
+          if (st.levels.getD idx none).isNone then
+            unassignedNames := p :: unassignedNames
+            unassignedIdxs := idx :: unassignedIdxs
+          idx := idx + 1
+        let fresh ← unassignedNames.mapM fun _ => mkFreshLevelMVar
+        let paPrepared := paInst.instantiateLevelParams unassignedNames fresh
+        if !(← isDefEq paPrepared a) then
+          return false
+        let resolved ← fresh.mapM instantiateLevelMVars
+        for (lIdx, lvl) in unassignedIdxs.zip resolved do
+          unless ← hasAssignableLevelMVar lvl do
+            modify fun s => { s with levels := s.levels.setIfInBounds lIdx (some lvl) }
+        return true
+  else
+    if paVar.looseBVarRange > ctx.pat.numVars then
+      return false
+    withNewMCtxDepth <| withTransparency .instances do
+      let mut allLvls : Array Level := Array.emptyWithCapacity ctx.pat.levelParams.length
+      let mut unassignedLvls : Array (Nat × Level) := #[]
+      let mut lIdx := 0
+      for _ in ctx.pat.levelParams do
+        if let some lvl := st.levels.getD lIdx none then
+          allLvls := allLvls.push (← instantiateLevelMVars lvl)
+        else
+          let u ← mkFreshLevelMVar
+          allLvls := allLvls.push u
+          unassignedLvls := unassignedLvls.push (lIdx, u)
+        lIdx := lIdx + 1
+      let allLvlsList := allLvls.toList
+      let lam :=
+        if ctx.pat.levelParams.isEmpty then ctx.pat.lam
+        else ctx.pat.lam.instantiateLevelParams ctx.pat.levelParams allLvlsList
+      let mut subst : Array Expr := Array.emptyWithCapacity ctx.pat.numVars
+      let mut unassignedVars : Array (Nat × Expr) := #[]
+      let mut cur := lam
+      for i in *...ctx.pat.numVars do
+        match cur with
+        | .lam _ d b _ =>
+          if let some v := st.vars.getD i none then
+            subst := subst.push v
+          else
+            let ty := d.instantiateRevRange 0 subst.size subst
+            let mv ← mkFreshExprMVar (some ty)
+            subst := subst.push mv
+            unassignedVars := unassignedVars.push (i, mv)
+          cur := b
+        | _ => break
+      if subst.size != ctx.pat.numVars then
+        return false
+      let paInst :=
+        if ctx.pat.levelParams.isEmpty then pa
+        else pa.instantiateLevelParams ctx.pat.levelParams allLvlsList
+      let paPrepared := paInst.instantiateRevRange 0 subst.size subst
       if !(← isDefEq paPrepared a) then
         return false
-      let resolved ← fresh.mapM instantiateLevelMVars
-      for (lIdx, lvl) in unassignedIdxs.zip resolved do
-        unless lvl.isMVar do
-          modify fun s => { s with levels := s.levels.setIfInBounds lIdx (some lvl) }
+      let mut varUpdates : Array (Nat × Expr) := #[]
+      for (vIdx, mv) in unassignedVars do
+        let val ← instantiateMVars mv
+        if val != mv then
+          if ← hasAssignableMVar val then
+            return false
+          if !bound.isEmpty && val.hasAnyFVar (bound.contains <| .fvar ·) then
+            return false
+          if ctx.pat.shouldCapture vIdx then
+            varUpdates := varUpdates.push (vIdx, val)
+      let mut lvlUpdates : Array (Nat × Level) := #[]
+      for (uIdx, u) in unassignedLvls do
+        let lvl ← instantiateLevelMVars u
+        if !(← hasAssignableLevelMVar lvl) then
+          lvlUpdates := lvlUpdates.push (uIdx, lvl)
+      if !varUpdates.isEmpty || !lvlUpdates.isEmpty then
+        modify fun s => Id.run do
+          let mut vars := s.vars
+          for (vIdx, val) in varUpdates do
+            vars := vars.setIfInBounds vIdx (some val)
+          let mut levels := s.levels
+          for (uIdx, lvl) in lvlUpdates do
+            levels := levels.setIfInBounds uIdx (some lvl)
+          return { s with vars, levels }
       return true
 
 private def projMismatchHintSide? (env : Environment) (ctx : StructCtx) (app proj : Expr) :
@@ -1153,7 +1250,7 @@ mutual
       if ← tryCheckpoint ctx (structGo ctx pa a bound lets isPat isOrigPat) then
         return true
       if isPat then
-        return ← tryCheckpoint ctx (matchInstArgDefEq ctx pa f a)
+        return ← tryCheckpoint ctx (matchInstArgDefEq ctx pa f a bound)
       return false
     | .forallE _ pd pb _, .forallE x d b bi
     | .lam _ pd pb _,     .lam x d b bi =>
@@ -1401,10 +1498,11 @@ private def matchStructural? (p : ExprPattern) (rel : ResolvedExprMatchRel)
     levels := .replicate p.levelParams.length none
   }
   let (ok, st) ← (structGo ctx p.body e #[] #[] (isPat := true) true).run initState
+  let namedVals? := if ok then p.namedIdx.mapM fun i => st.vars.getD i none else none
   if traceEnabled then
     let patFmt ← formatPatExpr p pinIdxs resolvedPins st.levels p.body
     let eInst ← instantiateMVarsIfNeeded e
-    if ok then
+    if namedVals?.isSome then
       trace[Meta.Match.expr]
         "[structural] matched:{indentD patFmt}\nagainst:{indentExpr eInst}"
     else
@@ -1415,9 +1513,7 @@ private def matchStructural? (p : ExprPattern) (rel : ResolvedExprMatchRel)
       | none =>
         trace[Meta.Match.expr]
           "[structural] failed:{indentD patFmt}\nagainst:{indentExpr eInst}"
-  if !ok then
-    return none
-  return p.namedIdx.mapM fun i => st.vars.getD i none
+  return namedVals?
 
 private def withLocalDefItems (zetaFlag : Bool) (posFVars negFVars : Array FVarId)
     (x : MetaM α) : MetaM α := do
@@ -3417,7 +3513,7 @@ mutual
       let nargs := args.length
       let kAcc := keys.push (.const declName nargs)
       if allowInst && nargs > 0 then
-        let finfo ← getFunInfoNArgs fn nargs
+        let finfo ← getFunInfo fn
         structuralPatKeysConstArgs allowInst raw bvarDepth finfo 0 args hArgsLt kAcc
       else
         structuralPatKeysArgs allowInst raw bvarDepth args hArgsLt kAcc
@@ -3477,11 +3573,7 @@ mutual
     | a :: tl =>
       have ha : sizeOf a < sizeOf raw := hl a (hL ▸ List.mem_cons_self)
       have _ : sizeOf tl < sizeOf l := by subst hL; simp; omega
-      let isInst :=
-        if hInfo : fwdIdx < finfo.paramInfo.size then
-          finfo.paramInfo[fwdIdx].isInstance
-        else
-          false
+      let isInst := isInstDispatchArg finfo fwdIdx
       let kAcc ←
         if isInst then
           pure (kAcc.push .star)

@@ -246,9 +246,10 @@ matching breaks on non-canonical instances or `let`-bound terms.
   `ResolvedExprMatchRel.withLocalItems`.
 - **Implement `+inst` hybrid mode and reject `-inst` on non-`/structural` engines**: in
   `/structural`, `structDirectMatch` tries structural argument matching first and falls back to
-  `matchInstArgDefEq` (guarded by `isInstArgAt`), running
-  `withNewMCtxDepth <| withTransparency .instances <| isDefEq` only on `[instImplicit]` arguments.
-  Conversely, `Meta.isDefEq` (`ExprDefEq.isDefEqArgs`) unconditionally bumps `[instImplicit]`
+  `matchInstArgDefEq` (guarded by `hasDistinctInductHeads` and `isInstArgAt` /
+  `isInstDispatchArg`), running `withNewMCtxDepth <| withTransparency .instances <| isDefEq` on
+  `isInstance` arguments and any implicit arguments referenced by a subsequent instance parameter's
+  `backDeps` (binding unassigned pattern variables/universe params when needed). Conversely, `Meta.isDefEq` (`ExprDefEq.isDefEqArgs`) unconditionally bumps `[instImplicit]`
   parameters to `.implicit`, and `/sym` operates on canonical `Sym` terms, so `-inst` cannot be
   honored on `/reducible`, `/instances`, `/defeq`, or `/sym` and is rejected statically and at
   runtime (directing callers to `/structural` for syntactic instance comparison).
@@ -370,7 +371,9 @@ interactions with `DiscrTree` keys.
 - Preserve exact source-order semantics and at-most-once evaluation via `sortAndDedupCands` before
   `dispatchCandidates` invokes `tryAt[idx]`.
 - In `/structural` indexing (`structuralPatKeys`), emit `.star` for closed proofs and for
-  `[instImplicit]` arguments when `+inst` is active. During lookup (`structuralDiscrTreeGetMatch`,
+  instance-dispatch arguments (`isInstDispatchArg`: `isInstance` parameters plus implicit
+  parameters in their `backDeps`) when `+inst` is active. During lookup
+  (`structuralDiscrTreeGetMatch`,
   `structuralTrieGetMatch`, `structuralScrutineeStep`), resolve assigned metavariables lazily at
   inspected heads only via pure `resolveHeadMVarPure` — never calling full-scrutinee
   `instantiateMVars`.

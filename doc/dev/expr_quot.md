@@ -170,9 +170,12 @@ def matchEtaPeeledPin (e : Expr) : MetaM (Option Expr) :=
     at runtime).
   - Matching same-constructor equations (`?C _ = ?C _`): match `?l = ?r` and call
     `Meta.isConstructorApp'?` or `Meta.injection`.
-  - Carrier aliases (`abbrev NatSet := FSet Nat`): `+inst` only relaxes `[instImplicit]`
-    arguments, so matching `(?x : _) ∈ (?s : FSet _)` against `s : NatSet` requires `/reducible`
-    or `[NatSet]` under `/structural +inst`.
+  - Carrier aliases (`abbrev NatSet := FSet Nat`, `@[instance_reducible] def OddNat := Nat`):
+    under `/structural +inst`, `[instImplicit]`/`isInstance` arguments and the implicit class
+    parameters they depend on (`FunInfo.paramInfo[k].backDeps`) are checked via `.instances`
+    `Meta.isDefEq` — so typeclass heads (`∈`, `+`, `-`, `<`) match aliases automatically. Non-
+    typeclass heads without a dependent instance parameter (e.g. `List` or `(?s : FSet _)`) still
+    keep implicit arguments structural under `+inst` and require `/reducible` or `[NatSet]`.
 
 ## Matching Relations, Flags, `[items]`, and `/sym`
 
@@ -208,11 +211,12 @@ def relationHits (x e : Expr) : MetaM (List String) := do
   return hits
 ```
 
-- **`+inst` in `/structural`**: matches ordinary subterms structurally while checking `[instImplicit]`
-  arguments via `.instances` `Meta.isDefEq` (ideal for polymorphic typeclasses such as
-  `Membership`, `HAdd`, `LT` without unfolding definitions). On `/reducible`, `/instances`,
-  `/defeq`, and `/sym`, instance comparison is always enabled and `-inst` is rejected at compile
-  time and runtime.
+- **`+inst` in `/structural`**: matches ordinary subterms structurally while checking
+  `isInstance` / `[instImplicit]` arguments and their implicit backward-dependency class
+  parameters via `.instances` `Meta.isDefEq` (ideal for polymorphic typeclasses such as
+  `Membership`, `HAdd`, `HSub`, `LT` even with reducible carrier or outParam aliases). On
+  `/reducible`, `/instances`, `/defeq`, and `/sym`, instance comparison is always enabled and
+  `-inst` is rejected at compile time and runtime.
 - **`[±decl, ±simpSet, ±$x]`**: rules apply left-to-right (**last wins**). Static `[decl]`
   items must name an unfoldable definition (`ConstantInfo.hasValue`); theorems (such as
   `Subtype.property`), constructors (`Nat.succ`), inductive types, recursors (`Nat.rec`), axioms,

@@ -114,11 +114,24 @@ end Structural
 
 section StructuralInst
 
+private abbrev MyNat := Nat
+@[instance_reducible] private def OddNat := Nat
+private abbrev MyFin5 := Fin 5
+set_option warn.classDefReducibility false in
+private def weirdAdd : HAdd Nat Nat Nat := ⟨fun a b => a - b⟩
+
 private def structInstMatch (e : Expr) : MetaM Nat :=
-  match e with
-  | `(expr +inst| ?a + ?b) => let _ := (a, b); return 1
-  | `(expr +inst| ?a * ?b) => let _ := (a, b); return 2
-  | _                      => return 0
+  match (modulo := +inst) e with
+  | `((?a : Nat) + ?b) => let _ := (a, b); return 1
+  | `((?a : Nat) - ?b) => let _ := (a, b); return 2
+  | `((?a : Nat) * ?b) => let _ := (a, b); return 3
+  | _                   => return 0
+
+private def structInstFinLt? (e : Expr) : MetaM (Option Expr) :=
+  match (modulo := +inst) e with
+  | `((?a : Fin ?n) < ?b) => let _ := (a, b); return some n
+  | `((?a : Nat) < ?b)    => let _ := (a, b); return some (mkNatLit 0)
+  | _                      => return none
 
 /-- info: 1 -/
 #guard_msgs in
@@ -131,6 +144,34 @@ run_meta do
     #[mkConst ``Nat, mkConst ``Nat, mkConst ``Nat,
       mkLet `inst instTy haddInst (mkBVar 0), mkNatLit 1, mkNatLit 1]
   logInfo m!"{← structInstMatch haddLetInst}"
+
+#guard_msgs in
+run_meta do
+  -- OutParam alias `@[instance_reducible] def OddNat := Nat`: `(42 - n : OddNat)`
+  withLocalDeclD `n (mkConst ``Nat) fun n => do
+    let oddSub := mkApp6 (mkConst ``HSub.hSub [0, 0, 0])
+      (mkConst ``Nat) (mkConst ``Nat) (mkConst ``OddNat)
+      (mkApp2 (mkConst ``instHSub [0]) (mkConst ``Nat) (mkConst ``instSubNat))
+      (mkNatLit 42) n
+    assertEq "OddNat HSub" (← structInstMatch oddSub) 2
+  -- Carrier alias `abbrev MyNat := Nat`: `(x : MyNat) + y`
+  withLocalDeclD `x (mkConst ``MyNat) fun x =>
+  withLocalDeclD `y (mkConst ``MyNat) fun y => do
+    let myAdd := mkApp6 (mkConst ``HAdd.hAdd [0, 0, 0])
+      (mkConst ``MyNat) (mkConst ``MyNat) (mkConst ``MyNat)
+      (mkApp2 (mkConst ``instHAdd [0]) (mkConst ``MyNat) (mkConst ``instAddNat)) x y
+    assertEq "MyNat HAdd" (← structInstMatch myAdd) 1
+  -- Type alias with pattern variable `abbrev MyFin5 := Fin 5`: captures `n == 5`
+  withLocalDeclD `x (mkConst ``MyFin5) fun x =>
+  withLocalDeclD `y (mkConst ``MyFin5) fun y => do
+    let finLt := mkApp4 (mkConst ``LT.lt [0])
+      (mkConst ``MyFin5) (mkApp (mkConst ``instLTFin) (mkNatLit 5)) x y
+    assertEq "MyFin5 LT" (← structInstFinLt? finLt) (some (mkNatLit 5))
+  -- Non-`instance_reducible` custom instance must NOT match standard `Nat` `+`
+  let badAdd := mkApp6 (mkConst ``HAdd.hAdd [0, 0, 0])
+    (mkConst ``Nat) (mkConst ``Nat) (mkConst ``Nat)
+    (mkConst ``weirdAdd) (mkNatLit 1) (mkNatLit 2)
+  assertEq "weirdAdd negative" (← structInstMatch badAdd) 0
 
 end StructuralInst
 
