@@ -157,34 +157,34 @@ theorem bool_false_of_iff_not {b : Bool} {P : Prop} (hiff : b = true ↔ P) (hn 
 private inductive GuardKind where | prop (p : Expr) | bool (p iffPf : Expr)
 
 private def matchNatRel? (e : Expr) : MetaM (Option Expr) := do
-  match e with
-  | `(expr/reducible| (?X : Nat) = ?Y) => some <$> `(expr| ($X : Nat) = $Y)
-  | `(expr/reducible| (?X : Nat) ≤ ?Y) => some <$> `(expr| ($X : Nat) ≤ $Y)
-  | `(expr/reducible| (?X : Nat) < ?Y) => some <$> `(expr| ($X : Nat) < $Y)
+  match (modulo := reducible) e with
+  | `((?X : Nat) = ?Y) => some <$> `(expr| ($X : Nat) = $Y)
+  | `((?X : Nat) ≤ ?Y) => some <$> `(expr| ($X : Nat) ≤ $Y)
+  | `((?X : Nat) < ?Y) => some <$> `(expr| ($X : Nat) < $Y)
   | _ => return none
 
 private def matchBoolCmp? (b : Expr) : MetaM (Option GuardKind) := do
-  match b with
-  | `(expr/reducible| Nat.beq ?X ?Y) =>
+  match (modulo := reducible) b with
+  | `(Nat.beq ?X ?Y) =>
     return some (.bool (← `(expr| ($X : Nat) = $Y)) (← `(expr| Iff.of_eq (@Nat.beq_eq $X $Y))))
-  | `(expr/reducible| (?X : Nat) == ?Y) =>
+  | `((?X : Nat) == ?Y) =>
     return some (.bool (← `(expr| ($X : Nat) = $Y)) (← `(expr| @beq_iff_eq Nat _ _ $X $Y)))
-  | `(expr/reducible| Nat.ble ?X ?Y) =>
+  | `(Nat.ble ?X ?Y) =>
     return some (.bool (← `(expr| ($X : Nat) ≤ $Y)) (← `(expr| Iff.of_eq (@Nat.ble_eq $X $Y))))
-  | `(expr/reducible| Nat.blt ?X ?Y) =>
+  | `(Nat.blt ?X ?Y) =>
     return some (.bool (← `(expr| ($X : Nat) < $Y)) (← `(expr| Iff.of_eq (@Nat.blt_eq $X $Y))))
-  | `(expr/reducible| @decide ?p ?d) =>
+  | `(@decide ?p ?d) =>
     let some rel ← matchNatRel? p | return none
     return some (.bool rel (← `(expr| @decide_eq_true_iff $rel $d)))
   | _ => return none
 
 private def matchGuard? (e : Expr) : MetaM (Option GuardKind) := do
-  match e with
-  | `(expr/reducible| @ite _ ?c _ _ _) =>
+  match (modulo := reducible) e with
+  | `(@ite _ ?c _ _ _) =>
     if let some p ← matchNatRel? c then return some (.prop p)
     if let `(expr/reducible| ?b = true) := c then return ← matchBoolCmp? b
     return none
-  | `(expr/reducible| @cond _ ?b _ _) => matchBoolCmp? b
+  | `(@cond _ ?b _ _) => matchBoolCmp? b
   | _ => return none
 
 private def simpExcept (g : MVarId) (keep : FVarId) (hyps : Array Expr) (thms : Array Name) :
@@ -250,11 +250,11 @@ partial def bdallStep (extra : Array Name := #[]) : TacticM Unit := do
   let handled ← withMainContext do
     let g ← getMainGoal
     let appRule n : TacticM Bool := do replaceMainGoal (← g.apply (mkConst n)); return true
-    match ← getMainTarget with
-    | `(expr/reducible| True) => g.assign (mkConst ``True.intro); replaceMainGoal []; return true
-    | `(expr/reducible| _ ∧ _) => appRule ``And.intro
-    | `(expr/reducible| BST .E) => appRule ``BST.E
-    | `(expr/reducible| BST (.T _ _ _ _)) => appRule ``BST.T
+    match (modulo := reducible) ← getMainTarget with
+    | `(True) => g.assign (mkConst ``True.intro); replaceMainGoal []; return true
+    | `(_ ∧ _) => appRule ``And.intro
+    | `(BST .E) => appRule ``BST.E
+    | `(BST (.T _ _ _ _)) => appRule ``BST.T
     | _ => return false
   if handled then return
   if ← tryCommit (firstHyp fun h => fun

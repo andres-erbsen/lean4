@@ -120,24 +120,24 @@ Rocq (`Stdlib.MSets.MSetDecide`): `Inductive MSet_elt_Prop` / `Inductive MSet_Pr
 `auto 100`. Raw typeclass heads + `isDefEq` match reducible aliases (`abbrev NatSet := FSet Nat`).
 -/
 partial def isMSetProp (elemTy setTy e : Expr) : MetaM Bool := do
-  match e with
-  | `(expr/structural +inst| True) => return true
-  | `(expr/structural +inst| False) => return true
-  | `(expr/structural +inst| ¬ ?P) => isMSetProp elemTy setTy P
-  | `(expr/structural +inst| ?P ∧ ?Q) => isMSetProp elemTy setTy P <&&> isMSetProp elemTy setTy Q
-  | `(expr/structural +inst| ?P ∨ ?Q) => isMSetProp elemTy setTy P <&&> isMSetProp elemTy setTy Q
-  | `(expr/structural +inst| ?P ↔ ?Q) => isMSetProp elemTy setTy P <&&> isMSetProp elemTy setTy Q
-  | `(expr/structural +inst| @Eq ?T _ _) => isDefEq T elemTy <||> isDefEq T setTy
-  | `(expr/structural +inst| @Ne ?T _ _) => isDefEq T elemTy <||> isDefEq T setTy
-  | `(expr/structural +inst| FSet.Empty ?s) => isDefEq (← inferType s) setTy
-  | `(expr/structural +inst| FSet.EqSet ?s₁ _) => isDefEq (← inferType s₁) setTy
-  | `(expr/structural +inst| FSet.Subset ?s₁ _) => isDefEq (← inferType s₁) setTy
-  | `(expr/structural +inst| FSet.Mem ?x ?s) =>
+  match (modulo := structural +inst) e with
+  | `(True) => return true
+  | `(False) => return true
+  | `(¬ ?P) => isMSetProp elemTy setTy P
+  | `(?P ∧ ?Q) => isMSetProp elemTy setTy P <&&> isMSetProp elemTy setTy Q
+  | `(?P ∨ ?Q) => isMSetProp elemTy setTy P <&&> isMSetProp elemTy setTy Q
+  | `(?P ↔ ?Q) => isMSetProp elemTy setTy P <&&> isMSetProp elemTy setTy Q
+  | `(@Eq ?T _ _) => isDefEq T elemTy <||> isDefEq T setTy
+  | `(@Ne ?T _ _) => isDefEq T elemTy <||> isDefEq T setTy
+  | `(FSet.Empty ?s) => isDefEq (← inferType s) setTy
+  | `(FSet.EqSet ?s₁ _) => isDefEq (← inferType s₁) setTy
+  | `(FSet.Subset ?s₁ _) => isDefEq (← inferType s₁) setTy
+  | `(FSet.Mem ?x ?s) =>
     isDefEq (← inferType x) elemTy <&&> isDefEq (← inferType s) setTy
-  | `(expr/structural +inst| @Membership.mem _ _ _ ?s ?x) =>
+  | `(@Membership.mem _ _ _ ?s ?x) =>
     isDefEq (← inferType x) elemTy <&&> isDefEq (← inferType s) setTy
-  | `(expr/structural +inst| @HasSubset.Subset _ _ ?s₁ _) => isDefEq (← inferType s₁) setTy
-  | `(expr/structural +inst| ?P → ?Q) =>
+  | `(@HasSubset.Subset _ _ ?s₁ _) => isDefEq (← inferType s₁) setTy
+  | `(?P → ?Q) =>
     if (← isProp P) && (← isProp Q) then
       isMSetProp elemTy setTy P <&&> isMSetProp elemTy setTy Q
     else return false
@@ -171,13 +171,13 @@ private def collectElemWitnesses (elemTy setTy : Expr) : TacticM (Array Expr) :=
     let mut out := acc
     for (sub, ctx) in subtermsUnderBinders e do
       let bvs := ctx.binders.map (·.fvarId!)
-      match sub with
-      | `(expr/structural +inst| @Membership.mem _ _ _ ?s ?x)
-      | `(expr/structural +inst| FSet.Mem ?x ?s) =>
+      match (modulo := structural +inst) sub with
+      | `(@Membership.mem _ _ _ ?s ?x)
+      | `(FSet.Mem ?x ?s) =>
         if !x.hasAnyFVar (bvs.contains ·) then
           if (← isDefEq (← inferType x) elemTy) && (← isDefEq (← inferType s) setTy) then
             out := out.push x
-      | `(expr/structural +inst| @Eq ?T ?x ?y) =>
+      | `(@Eq ?T ?x ?y) =>
         if ← isDefEq T elemTy then
           if !x.hasAnyFVar (bvs.contains ·) then out := out.push x
           if !y.hasAnyFVar (bvs.contains ·) then out := out.push y
@@ -231,12 +231,12 @@ private def substMSetStep (elemTy setTy : Expr) : TacticM Unit := firstHyp fun h
 private def fsetPropStep : TacticM Unit := withMainContext do
   let g ← getMainGoal; let tgt ← getMainTarget
   let hyps ← localHypTypes (reverse := true)
-  match tgt with
-  | `(expr/reducible| _ ∧ _) | `(expr/reducible| _ ↔ _) =>
+  match (modulo := reducible) tgt with
+  | `(_ ∧ _) | `(_ ↔ _) =>
     evalTactic (← `(tactic| constructor)); return
-  | `(expr/reducible| ¬ _) | `(expr/reducible| @Ne _ _ _) =>
+  | `(¬ _) | `(@Ne _ _ _) =>
     liftMetaTactic1 fun m => return some (← m.intro1).2; return
-  | `(expr/reducible| ?P → ?Q) =>
+  | `(?P → ?Q) =>
     if (← isProp P) && (← isProp Q) then
       liftMetaTactic1 fun m => return some (← m.intro1).2; return
   | _ => pure ()
@@ -288,11 +288,11 @@ private def assertOneDec (elemTy setTy : Expr) : TacticM Unit := withMainContext
   let collect (e : Expr) : MetaM (Array Expr) := do
     let mut out := #[]
     for (sub, _) in subterms e do
-      match sub with
-      | `(expr/structural +inst| @Membership.mem _ _ _ ?s ?x) =>
+      match (modulo := structural +inst) sub with
+      | `(@Membership.mem _ _ _ ?s ?x) =>
         if (← isDefEq (← inferType x) elemTy) && (← isDefEq (← inferType s) setTy) then
           out := out.push sub
-      | `(expr/structural +inst| @Eq ?T _ _) =>
+      | `(@Eq ?T _ _) =>
         if ← isDefEq T elemTy then out := out.push sub
       | _ => pure ()
     return out
@@ -329,9 +329,9 @@ def fsetdec : TacticM Unit := do
   allGoals (evalTactic (← `(tactic| try simp only [FSet.subset_iff, FSet.eqSet_iff,
     FSet.emptySet_iff] at *)))
   allGoals (repeatAll <| withMainContext do
-    match ← getMainTarget with
-    | `(expr/reducible| _ ∧ _) | `(expr/reducible| _ ↔ _) => evalTactic (← `(tactic| constructor))
-    | `(expr/reducible| ∀ _, _) | `(expr/reducible| ¬ _) =>
+    match (modulo := reducible) ← getMainTarget with
+    | `(_ ∧ _) | `(_ ↔ _) => evalTactic (← `(tactic| constructor))
+    | `(∀ _, _) | `(¬ _) =>
       liftMetaTactic1 fun m => return some (← m.intro1).2
     | _ => failure)
   allGoals (instMSetHyps elemTy setTy)

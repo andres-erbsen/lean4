@@ -232,9 +232,9 @@ infeasible: refuted by `decide` (for closed `v`), or contradicting an earlier pa
 def pruneInfeasible (h : FVarId) : TacticM Bool := withMainContext do
   let g ← getMainGoal
   let p ← instantiateMVars (← h.getType)
-  match p with
-  | `(expr/reducible| (_ : Word) = 0) => pure ()
-  | `(expr/reducible| (_ : Word) ≠ 0) => pure ()
+  match (modulo := reducible) p with
+  | `((_ : Word) = 0) => pure ()
+  | `((_ : Word) ≠ 0) => pure ()
   | _ => return false
   let tgt ← g.getType
   if !p.hasFVar && !p.hasMVar && (← whnfD (← mkDecide (mkNot p))).isConstOf ``true then
@@ -242,10 +242,10 @@ def pruneInfeasible (h : FVarId) : TacticM Bool := withMainContext do
     replaceMainGoal []
     return true
   let r ← Tactic.firstHyp? (except := [.fvar h]) fun h' ty => do
-    match p, ty with
-    | `(expr/reducible| ¬ (?q : Prop)), `(expr/reducible| $q) =>
+    match (modulo := reducible) p, ty with
+    | `(¬ (?q : Prop)), `($q) =>
       g.assign (← mkAbsurd tgt h' (.fvar h))
-    | _, `(expr/reducible| ¬ $p) =>
+    | _, `(¬ $p) =>
       g.assign (← mkAbsurd tgt (.fvar h) h')
     | _, _ => failure
     replaceMainGoal []
@@ -280,18 +280,18 @@ def unfoldCmd (c : Lean.Expr) : MetaM Simp.Result := do
 def execEvalStep : TacticM Unit := withMainContext do
   let g ← getMainGoal
   let apply (rule : Lean.Expr) : TacticM Unit := do replaceMainGoal (← g.apply rule)
-  match (← instantiateMVars (← g.getType)).headBeta with
-  | `(expr/reducible| Exec .skip _ _ _ _) => apply (mkConst ``Exec.skip)
-  | `(expr/reducible| Exec (.seq _ _) _ _ _ _) => apply (mkConst ``Exec.seq_cps)
-  | `(expr/reducible| Exec (.set _ _) _ _ _ _) => apply (mkConst ``Exec.set)
-  | `(expr/reducible| Exec (.unset _) _ _ _ _) => apply (mkConst ``Exec.unset)
-  | `(expr/reducible| Exec (.input _) _ _ _ _) => apply (mkConst ``Exec.input)
-  | `(expr/reducible| Exec (.output _) _ _ _ _) => apply (mkConst ``Exec.output)
-  | `(expr/reducible| Exec (.cond _ _ _) _ _ _ _) => apply (mkConst ``Exec.cond_split)
-  | `(expr/reducible| Exec ?c ?t ?m ?l ?post) =>
+  match (modulo := reducible) (← instantiateMVars (← g.getType)).headBeta with
+  | `(Exec .skip _ _ _ _) => apply (mkConst ``Exec.skip)
+  | `(Exec (.seq _ _) _ _ _ _) => apply (mkConst ``Exec.seq_cps)
+  | `(Exec (.set _ _) _ _ _ _) => apply (mkConst ``Exec.set)
+  | `(Exec (.unset _) _ _ _ _) => apply (mkConst ``Exec.unset)
+  | `(Exec (.input _) _ _ _ _) => apply (mkConst ``Exec.input)
+  | `(Exec (.output _) _ _ _ _) => apply (mkConst ``Exec.output)
+  | `(Exec (.cond _ _ _) _ _ _ _) => apply (mkConst ``Exec.cond_split)
+  | `(Exec ?c ?t ?m ?l ?post) =>
     let r ← unfoldCmd c
     apply (mkAppN (mkConst ``Exec.congr_cmd) #[c, r.expr, t, m, l, post, ← r.getProof])
-  | `(expr/reducible| (_ : Option Word) = some _) => focus do
+  | `((_ : Option Word) = some _) => focus do
     evalTactic (← `(tactic| try exec_simp))
     let [g] ← getUnsolvedGoals | return
     if (← observing? g.refl).isSome then replaceMainGoal []; return
@@ -354,9 +354,9 @@ infeasible: refuted by `decide` (for closed `v`), or contradicting an earlier pa
 def pruneInfeasibleSym (h : FVarId) : GrindTacticM Bool := withMainContext do
   let g := (← getMainGoal).mvarId
   let p ← instantiateMVars (← h.getType)
-  match p with
-  | `(expr/reducible| (_ : Word) = 0) => pure ()
-  | `(expr/reducible| (_ : Word) ≠ 0) => pure ()
+  match (modulo := reducible) p with
+  | `((_ : Word) = 0) => pure ()
+  | `((_ : Word) ≠ 0) => pure ()
   | _ => return false
   let tgt ← g.getType
   if !p.hasFVar && !p.hasMVar && (← whnfD (← mkDecide (mkNot p))).isConstOf ``true then
@@ -364,10 +364,10 @@ def pruneInfeasibleSym (h : FVarId) : GrindTacticM Bool := withMainContext do
     replaceMainGoal []
     return true
   let r ← firstHyp? (except := [.fvar h]) fun h' ty => do
-    match p, ty with
-    | `(expr/reducible| ¬ (?q : Prop)), `(expr/reducible| $q) =>
+    match (modulo := reducible) p, ty with
+    | `(¬ (?q : Prop)), `($q) =>
       g.assign (← mkAbsurd tgt h' (.fvar h))
-    | _, `(expr/reducible| ¬ $p) =>
+    | _, `(¬ $p) =>
       g.assign (← mkAbsurd tgt (.fvar h) h')
     | _, _ => failure
     replaceMainGoal []
@@ -396,18 +396,18 @@ def execSymCore (cfg : ExecSymConfig) : GrindTacticM Unit := do
   let simpRest : GrindTacticM Unit := do
     if cfg.eager then discard <| simpMainGoal evalM (cacheKey? := cacheKey?)
   whileGoals (headBeta := true) do
-    match ← getMainTarget with
-    | `(expr/sym| Exec .skip _ _ _ _) => applyDecl ``Exec.skip
-    | `(expr/sym| Exec (.seq _ _) _ _ _ _) => applyDecl ``Exec.seq_cps
-    | `(expr/sym| Exec (.set _ _) _ _ _ _) =>
+    match (modulo := sym) ← getMainTarget with
+    | `(Exec .skip _ _ _ _) => applyDecl ``Exec.skip
+    | `(Exec (.seq _ _) _ _ _ _) => applyDecl ``Exec.seq_cps
+    | `(Exec (.set _ _) _ _ _ _) =>
       andThenSubgoals (applyDecl ``Exec.set) solveLookup simpRest
-    | `(expr/sym| Exec (.unset _) _ _ _ _) => applyDecl ``Exec.unset
-    | `(expr/sym| Exec (.input _) _ _ _ _) => applyDecl ``Exec.input
-    | `(expr/sym| Exec (.output _) _ _ _ _) =>
+    | `(Exec (.unset _) _ _ _ _) => applyDecl ``Exec.unset
+    | `(Exec (.input _) _ _ _ _) => applyDecl ``Exec.input
+    | `(Exec (.output _) _ _ _ _) =>
       andThenSubgoals (applyDecl ``Exec.output) solveLookup simpRest
-    | `(expr/sym| Exec (.cond _ _ _) _ _ _ _) =>
+    | `(Exec (.cond _ _ _) _ _ _ _) =>
       andThenSubgoals (applyDecl ``Exec.cond_split) solveLookup simpRest
-    | `(expr/sym| Exec ?c ?t ?m ?l ?post) =>
+    | `(Exec ?c ?t ?m ?l ?post) =>
       let goal ← getMainGoal
       goal.mvarId.withContext do
         let some f := c.getAppFn.constName? | throwError "exec_sym: cannot unfold{indentExpr c}"

@@ -40,7 +40,7 @@ open Lean Meta Elab Tactic
 
 /-- Unfolds a `let`-bound or global term definition `t` inside `HasType Γ t τ`. -/
 def unfoldTmGoal (g : MVarId) : MetaM MVarId := g.withContext do
-  let `(expr| HasType ?γ ?t ?τ) ← g.getType
+  let `(HasType ?γ ?t ?τ) ← g.getType
     | throwError "unfoldTmGoal: expected HasType goal"
   if let .fvar fv := t.getAppFn then
     if let some v ← fv.getValue? then
@@ -62,18 +62,18 @@ partial def tcStep : TacticM Unit := withMainContext do
   let apply (rule : Name) : TacticM Unit := do
     replaceMainGoal (← (← getMainGoal).apply (← mkConstWithFreshMVarLevels rule))
   match ← getMainTarget with
-  | `(expr| HasType _ (.lit _) _) => apply ``HasType.lit
-  | `(expr| HasType _ .tt _) => apply ``HasType.tt
-  | `(expr| HasType _ (.var _) _) =>
+  | `(HasType _ (.lit _) _) => apply ``HasType.lit
+  | `(HasType _ .tt _) => apply ``HasType.tt
+  | `(HasType _ (.var _) _) =>
     andThenSubgoals (apply ``HasType.var) (first := do (← getMainGoal).refl)
-  | `(expr| HasType _ (.add _ _) _) => apply ``HasType.add
-  | `(expr| HasType _ (.ite _ _ _) _) => apply ``HasType.ite
-  | `(expr| HasType _ (.lam _ _) _) => apply ``HasType.lam
-  | `(expr| HasType _ (.app _ _) _) =>
+  | `(HasType _ (.add _ _) _) => apply ``HasType.add
+  | `(HasType _ (.ite _ _ _) _) => apply ``HasType.ite
+  | `(HasType _ (.lam _ _) _) => apply ``HasType.lam
+  | `(HasType _ (.app _ _) _) =>
     -- `HasType.app` leaves `?α` open; checking the function first assigns it, and the
     -- assigned `?α` goal is then skipped instead of being dispatched to `rest`.
     andThenSubgoals (apply ``HasType.app) (first := whileGoals tcStep)
-  | `(expr| HasType _ _ _) => replaceMainGoal [← unfoldTmGoal (← getMainGoal)]
+  | `(HasType _ _ _) => replaceMainGoal [← unfoldTmGoal (← getMainGoal)]
   | tgt => throwError "typecheck: unexpected goal{indentExpr tgt}"
 
 /-- `typecheck` proves every open `HasType` goal. -/
@@ -83,13 +83,13 @@ elab "typecheck" : tactic => whileGoals tcStep
 def refuteHyp? (g : MVarId) (h : FVarId) : MetaM Bool := g.withContext do
   let p ← instantiateMVars (← h.getType)
   let tgt ← g.getType
-  match p with
-  | `(expr/reducible| @Eq _ ?x ?y) =>
+  match (modulo := reducible) p with
+  | `(@Eq _ ?x ?y) =>
     if let (some c₁, some c₂) := (← matchConstructorApp? x, ← matchConstructorApp? y) then
       if c₁.name != c₂.name then
         g.assign (← mkNoConfusion tgt (.fvar h))
         return true
-  | `(expr/reducible| ¬ (@Eq _ ?x $x)) =>
+  | `(¬ (@Eq _ ?x $x)) =>
     g.assign (← mkAbsurd tgt (← mkEqRefl x) (.fvar h))
     return true
   | _ => pure ()
@@ -98,10 +98,10 @@ def refuteHyp? (g : MVarId) (h : FVarId) : MetaM Bool := g.withContext do
       g.assign (← mkAbsurd tgt (.fvar h) prf)
       return true
   let res? ← g.firstHyp? (except := [.fvar h]) fun h' ty => do
-    match p, ty with
-    | `(expr/reducible| ¬ (?q : Prop)), `(expr/reducible| $q) =>
+    match (modulo := reducible) p, ty with
+    | `(¬ (?q : Prop)), `($q) =>
       g.assign (← mkAbsurd tgt h' (.fvar h))
-    | _, `(expr/reducible| ¬ $p) =>
+    | _, `(¬ $p) =>
       g.assign (← mkAbsurd tgt (.fvar h) h')
     | _, _ => failure
   return res?.isSome
@@ -151,9 +151,9 @@ example : (True ∧ True) ∧ True := by
     whileGoals do
       let g ← getMainGoal
       match ← getMainTarget with
-      | `(expr| _ ∧ _) =>
+      | `(_ ∧ _) =>
         replaceMainGoal (← g.apply (mkConst ``And.intro))
-      | `(expr| True) =>
+      | `(True) =>
         g.assign (mkConst ``True.intro)
         replaceMainGoal []
         if (← getUnsolvedGoals).isEmpty then

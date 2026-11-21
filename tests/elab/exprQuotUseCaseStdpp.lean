@@ -49,15 +49,15 @@ def fastDoneCore : TacticM Unit := focus <| withMainContext do
   let close (pf : Expr) : TacticM Unit := do g.assign pf; replaceMainGoal []
   if ← g.assumptionCore then replaceMainGoal []; return
   if let `(expr/reducible| True) := tgt then close (mkConst ``True.intro); return
-  match tgt with
-  | `(expr/reducible| _ = _) =>
+  match (modulo := reducible) tgt with
+  | `(_ = _) =>
     for (h, _) in hyps do
       if ← tryCommit (do if (← g.apply (← mkEqSymm h)).isEmpty then replaceMainGoal [] else failure)
       then return
-  | `(expr/reducible| ?lhs ≠ ?rhs) =>
+  | `(?lhs ≠ ?rhs) =>
     for case (h, `(expr/reducible| $rhs ≠ $lhs)) in hyps do
       if ← tryCommit (close (← mkAppM ``Ne.symm #[h])) then return
-  | `(expr/reducible| ?P ↔ ?Q) =>
+  | `(?P ↔ ?Q) =>
     for case (h, `(expr/reducible| $Q ↔ $P)) in hyps do
       if ← tryCommit (close (← mkAppM ``Iff.symm #[h])) then return
   | _ => pure ()
@@ -127,10 +127,10 @@ private def simplifyEqStep (forbidden : FVarIdSet) :
       | true, false => pure (rhs1, true)
       | _, _ => failure
     firstHyp (except := h1 :: excluded) fun h2 ty2 => do
-      let flip2 ← match ty2 with
-        | `(expr/reducible| $o = ?r) =>
+      let flip2 ← match (modulo := reducible) ty2 with
+        | `($o = ?r) =>
           if (← isConstructorApp'? r).isSome then pure false else failure
-        | `(expr/reducible| ?l = $o) =>
+        | `(?l = $o) =>
           if (← isConstructorApp'? l).isSome then pure true else failure
         | _ => failure
       let h1' ← if flip1 then pure h1 else mkEqSymm h1
@@ -217,15 +217,15 @@ private partial def oposeInstantiate (h term ty : Expr) (subgoals : Array MVarId
 private def naiveDetStep (tac : TacticM Unit) : TacticM Unit := withMainContext do
   if ← tryCommit fastDoneCore then return
   let tgt ← getMainTarget
-  match tgt with
-  | `(expr/reducible| ∀ _, _) => liftMetaTactic1 fun g => return some (← g.intro1).2; return
-  | `(expr/reducible| _ ↔ _) => applyc ``Iff.intro; return
+  match (modulo := reducible) tgt with
+  | `(∀ _, _) => liftMetaTactic1 fun g => return some (← g.intro1).2; return
+  | `(_ ↔ _) => applyc ``Iff.intro; return
   | _ => pure ()
   let hyps ← localHypTypes (reverse := true)
   for (h, ty) in hyps do
-    match ty with
-    | `(expr/reducible| False) | `(expr/reducible| Option.isSome none = true)
-    | `(expr/reducible| _ ∧ _) | `(expr/reducible| Exists _) | `(expr/reducible| _ ↔ _) =>
+    match (modulo := reducible) ty with
+    | `(False) | `(Option.isSome none = true)
+    | `(_ ∧ _) | `(Exists _) | `(_ ↔ _) =>
       casesHyp h; return
     | _ => pure ()
   if (← firstHyp? fun h1 => fun

@@ -136,7 +136,7 @@ private def splitIfCond (c dec : Expr) : TacticM Unit := withMainContext do
 private partial def splitFirstIfIn (e : Expr) : TacticM Unit := withMainContext do
   for (sub, _) in subterms e do
     match sub with
-    | `(expr| @ite _ ?c ?d _ _) | `(expr| @dite _ ?c ?d _ _) =>
+    | `(@ite _ ?c ?d _ _) | `(@dite _ ?c ?d _ _) =>
       if ← tryCommit (splitFirstIfIn c) then return
       if ← tryCommit (splitIfCond c d) then return
     | _ => pure ()

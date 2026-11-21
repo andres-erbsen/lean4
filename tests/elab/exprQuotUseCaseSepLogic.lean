@@ -117,9 +117,9 @@ partial def proveSepAppend : List Expr → List Expr → MetaM (Expr × Expr)
 /-- Structural `emp`/`sep` normalizer returning `(clauses, e ⊢ₛ denote cs, denote cs ⊢ₛ e)`. -/
 partial def normalizeSep (e : Expr) : MetaM (List Expr × Expr × Expr) := do
   match ← instantiateMVars e with
-  | `(expr| HProp.emp) =>
+  | `(HProp.emp) =>
     return ([], ← `(expr| Entails.refl HProp.emp), ← `(expr| Entails.refl HProp.emp))
-  | `(expr| HProp.sep ?p ?q) =>
+  | `(HProp.sep ?p ?q) =>
     let (ps, toP, fromP) ← normalizeSep p
     let (qs, toQ, fromQ) ← normalizeSep q
     let (appMp, appMpr) ← proveSepAppend ps qs
@@ -192,20 +192,20 @@ partial def sepCancelStep : TacticM Unit := withMainContext do
   let g ← getMainGoal
   let tgt ← getMainTarget
   match tgt with
-  | `(expr| Entails (HProp.ex _) _) => applyAndIntro ``Entails.ex_l
-  | `(expr| Entails (HProp.sep (HProp.pure _) _) _) => applyAndIntro ``Entails.pure_l
-  | `(expr| Entails _ (HProp.ex _)) =>
+  | `(Entails (HProp.ex _) _) => applyAndIntro ``Entails.ex_l
+  | `(Entails (HProp.sep (HProp.pure _) _) _) => applyAndIntro ``Entails.pure_l
+  | `(Entails _ (HProp.ex _)) =>
     replaceMainGoal (← g.apply (← mkConstWithFreshMVarLevels ``Entails.ex_r))
-  | `(expr| Entails _ (HProp.sep (HProp.pure _) _)) =>
+  | `(Entails _ (HProp.sep (HProp.pure _) _)) =>
     andThenSubgoals (do replaceMainGoal (← g.apply (mkConst ``Entails.pure_r)))
       (first := whileGoals sepCancelStep)
       (rest := evalTactic (← `(tactic| try (first | rfl | assumption | omega | decide))))
-  | `(expr| Entails ?P ?Q) =>
+  | `(Entails ?P ?Q) =>
     if let some pf ← solveEntails P Q then g.assign pf; replaceMainGoal []
     else throwError "sep_cancel: cannot prove{indentExpr tgt}"
-  | `(expr| Exists _) =>
+  | `(Exists _) =>
     replaceMainGoal (← g.apply (← mkConstWithFreshMVarLevels ``Exists.intro))
-  | `(expr| Holds ?h ?Q) =>
+  | `(Holds ?h ?Q) =>
     let some pf ← g.firstHyp? fun hyp hypTy => do
         let `(expr/reducible| Holds ?h' ?P) := hypTy | failure
         unless ← isDefEq h' h do failure

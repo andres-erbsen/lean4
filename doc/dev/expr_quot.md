@@ -592,9 +592,9 @@ partial def stepManual (evalM postM : Sym.Simp.Methods) : GrindTacticM Unit := d
   let goal :: rest ← getUnsolvedGoals | return
   setGoals [goal]
   let ty := (← instantiateMVars (← goal.mvarId.getType)).headBeta
-  match ty with
-  | `(expr/sym| Exec .skip _ _) => evalGrindTactic (← `(grind| apply Exec.skip))
-  | `(expr/sym| Exec (.add _) _ _) =>
+  match (modulo := sym) ty with
+  | `(Exec .skip _ _) => evalGrindTactic (← `(grind| apply Exec.skip))
+  | `(Exec (.add _) _ _) =>
     evalGrindTactic (← `(grind| apply Exec.add))
     -- Manually simplify subgoal 0, close with refl?, and skip solved `?m` subgoals...
   | _ => ...
@@ -629,11 +629,11 @@ def runExecSym (cfg : ExecCfg) (evalM postM : Sym.Simp.Methods)
   let rest : GrindTacticM Unit := do
     if cfg.eager then discard <| simpMainGoal evalM (cacheKey? := cacheKey?)
   whileGoals (headBeta := true) do
-    match ← getMainTarget with
-    | `(expr/sym| Exec .skip _ _)     => applyDecl ``Exec.skip
-    | `(expr/sym| Exec (.seq _ _) _ _) => applyDecl ``Exec.seq_cps
-    | `(expr/sym| Exec (.add _) _ _)   => andThenSubgoals (applyDecl ``Exec.add) side rest
-    | `(expr/sym| ∀ _, _)              => discard intro1
+    match (modulo := sym) ← getMainTarget with
+    | `(Exec .skip _ _)     => applyDecl ``Exec.skip
+    | `(Exec (.seq _ _) _ _) => applyDecl ``Exec.seq_cps
+    | `(Exec (.add _) _ _)   => andThenSubgoals (applyDecl ``Exec.add) side rest
+    | `(∀ _, _)              => discard intro1
     | _ =>
       if ← simpMainGoal postM (cacheKey? := postKey?) then return
       focus <| evalGrindTactic (← `(grind| finish))

@@ -50,7 +50,7 @@ private def applyc (c : Name) : TacticM Unit :=
 /-! ## 1. `contradict H` (`[Not, Ne]`) -/
 
 private def ensureFalseTarget (g : MVarId) : MetaM MVarId := g.withContext do
-  if let `(expr| False) := ← instantiateMVars (← g.getType) then return g
+  if let `(False) := ← instantiateMVars (← g.getType) then return g
   let [gF] ← g.apply (← mkConstWithFreshMVarLevels ``False.elim) | throwError "contradict: failed"
   return gF
 
@@ -64,7 +64,7 @@ private def posPosCore (g : MVarId) (h : FVarId) : MetaM MVarId := do
   gRev.withContext do
     -- `[Not]` drops the `Prop` constraint on `Nat → False`, so check `isProp A` before folding.
     if ← isProp A then
-      if let `(expr| _ → False) := ← instantiateMVars (← gRev.getType) then
+      if let `(_ → False) := ← instantiateMVars (← gRev.getType) then
         if let some gF ← observing? (gRev.replaceTargetDefEq (← `(expr| ¬ $A))) then return gF
     return gRev
 

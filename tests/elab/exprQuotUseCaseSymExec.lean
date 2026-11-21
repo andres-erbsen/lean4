@@ -75,10 +75,10 @@ def prunePathHyp (h : FVarId) : GrindTacticM Unit := do
   let p ← g.withContext do instantiateMVars (← h.getType)
   let tgt ← g.getType
   discard <| firstHyp? (except := [.fvar h]) fun h' ty => do
-    match p, ty with
-    | `(expr/reducible| ¬ (?q : Prop)), `(expr/reducible| $q) =>
+    match (modulo := reducible) p, ty with
+    | `(¬ (?q : Prop)), `($q) =>
       g.assign (← mkAbsurd tgt h' (.fvar h))
-    | _, `(expr/reducible| ¬ $p) =>
+    | _, `(¬ $p) =>
       g.assign (← mkAbsurd tgt (.fvar h) h')
     | _, _ => failure
     replaceMainGoal []
@@ -112,14 +112,14 @@ def execSymCore (cfg : ExecSymConfig) : GrindTacticM Unit := do
     prunePathHyp h
   let seqRule ← getOrCreateBackwardRule ``Exec.seq_cps
   whileGoals (headBeta := true) do
-    match ← getMainTarget with
-    | `(expr/sym| Exec .skip _ _) => applyDecl ``Exec.skip
-    | `(expr/sym| Exec (.seq _ _) _ _) => applyBackwardRule seqRule
-    | `(expr/sym| Exec (.add _) _ _) => andThenSubgoals (applyDecl ``Exec.add) side rest
-    | `(expr/sym| Exec (.check _) _ _) => andThenSubgoals (applyDecl ``Exec.check) side rest
-    | `(expr/sym| Exec (.cond _ _ _) _ _) =>
+    match (modulo := sym) ← getMainTarget with
+    | `(Exec .skip _ _) => applyDecl ``Exec.skip
+    | `(Exec (.seq _ _) _ _) => applyBackwardRule seqRule
+    | `(Exec (.add _) _ _) => andThenSubgoals (applyDecl ``Exec.add) side rest
+    | `(Exec (.check _) _ _) => andThenSubgoals (applyDecl ``Exec.check) side rest
+    | `(Exec (.cond _ _ _) _ _) =>
       andThenSubgoals (applyDecl ``Exec.cond) branch branch
-    | `(expr/sym| Exec ?p ?n ?post) =>
+    | `(Exec ?p ?n ?post) =>
       let goal ← getMainGoal
       goal.mvarId.withContext do
         let some f := p.getAppFn.constName? | throwError "exec_sym: cannot unfold{indentExpr p}"
@@ -131,7 +131,7 @@ def execSymCore (cfg : ExecSymConfig) : GrindTacticM Unit := do
         let prf := mkAppN (mkConst ``Exec.congr_prog) #[p, p', n, post, pf, g]
         goal.mvarId.assign prf
         replaceMainGoal [{ goal with mvarId := g.mvarId! }]
-    | `(expr/sym| ∀ _, _) => discard intro1
+    | `(∀ _, _) => discard intro1
     | _ =>
       match ← simpGoal (← getMainGoal) postM (cacheKey? := cacheKey?) with
       | none => replaceMainGoal []
@@ -221,10 +221,10 @@ scoped syntax (name := testGrindWhileFocus) "test_grind_while_focus" : grind
 @[grind_tactic testGrindWhileFocus] def evalTestGrindWhileFocus : GrindTactic := fun _ => do
   let seenEmpty ← IO.mkRef 0
   whileGoals (headBeta := true) do
-    match ← getMainTarget with
-    | `(expr/sym| _ ∧ _) =>
+    match (modulo := sym) ← getMainTarget with
+    | `(_ ∧ _) =>
       applyDecl ``And.intro
-    | `(expr/sym| True) =>
+    | `(True) =>
       let g ← getMainGoal
       g.mvarId.assign (mkConst ``True.intro)
       replaceMainGoal []

@@ -361,9 +361,9 @@ partial def miniExecStep : TacticM Unit := withMainContext do
   let applyRule (r : Name) : TacticM Unit := do
     replaceMainGoal (← (← getMainGoal).apply (← mkConstWithFreshMVarLevels r))
   match ← getMainTarget with
-  | `(expr| MiniExec .skip _ _) => applyRule ``MiniExec.skip
-  | `(expr| MiniExec (.seq _ _) _ _) => applyRule ``MiniExec.seq_cps
-  | `(expr| MiniExec (.add _) _ _) =>
+  | `(MiniExec .skip _ _) => applyRule ``MiniExec.skip
+  | `(MiniExec (.seq _ _) _ _) => applyRule ``MiniExec.seq_cps
+  | `(MiniExec (.add _) _ _) =>
     -- `MiniExec.add` yields `[n + k = ?m, post ?m, ?m : Nat]`; `refl` instantiates `?m`,
     -- so `andThenSubgoals` skips the solved `?m : Nat` witness goal automatically.
     andThenSubgoals (applyRule ``MiniExec.add) (first := do (← getMainGoal).refl)
@@ -390,10 +390,10 @@ syntax (name := miniSym) "mini_sym" : grind
     if ← assumption? then return
     throwError "mini_sym: cannot discharge{indentExpr (← getMainTarget)}"
   whileGoals (headBeta := true) do
-    match ← getMainTarget with
-    | `(expr/sym| MiniExec .skip _ _) => applyDecl ``MiniExec.skip
-    | `(expr/sym| MiniExec (.seq _ _) _ _) => applyDecl ``MiniExec.seq_cps
-    | `(expr/sym| MiniExec (.add _) _ _) =>
+    match (modulo := sym) ← getMainTarget with
+    | `(MiniExec .skip _ _) => applyDecl ``MiniExec.skip
+    | `(MiniExec (.seq _ _) _ _) => applyDecl ``MiniExec.seq_cps
+    | `(MiniExec (.add _) _ _) =>
       andThenSubgoals (applyDecl ``MiniExec.add) side (pure ())
     | _ =>
       let g ← getMainGoal

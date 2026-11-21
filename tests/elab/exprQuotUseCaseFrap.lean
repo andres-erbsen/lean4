@@ -140,30 +140,30 @@ theorem checkFormula_sound (env : Nat → Prop) (f : Formula)
 
 private def position (x : Expr) (ls : List Expr) : MetaM (Option Nat) := do
   for (y, i) in ls.zipIdx do
-    if let `(expr| $x) := y then return some i
+    if let `($x) := y then return some i
   return none
 
 /-- Guards `(expr| ?Q1 → ?Q2)` so `Type → Prop` arrows (e.g. `Nat → P`) remain atomic. -/
 private def isPropImp? (e : Expr) : MetaM (Option (Expr × Expr)) := do
-  let `(expr| ?Q1 → ?Q2) := e | return none
+  let `(?Q1 → ?Q2) := e | return none
   if (← isProp Q1) && (← isProp Q2) then return some (Q1, Q2) else return none
 
 private partial def varsIn (P : Expr) (acc : List Expr) : MetaM (List Expr) := do
   match P with
-  | `(expr| True) | `(expr| False) => return acc
-  | `(expr| ¬ ?Q) => varsIn Q acc
-  | `(expr| ?Q1 ∧ ?Q2) | `(expr| ?Q1 ∨ ?Q2) => varsIn Q2 (← varsIn Q1 acc)
+  | `(True) | `(False) => return acc
+  | `(¬ ?Q) => varsIn Q acc
+  | `(?Q1 ∧ ?Q2) | `(?Q1 ∨ ?Q2) => varsIn Q2 (← varsIn Q1 acc)
   | _ =>
     if let some (Q1, Q2) ← isPropImp? P then varsIn Q2 (← varsIn Q1 acc)
     else if (← position P acc).isSome then return acc else return P :: acc
 
 private partial def reifyFormula (P : Expr) (vars : List Expr) : MetaM Expr := do
   match P with
-  | `(expr| True) => `(expr| Formula.truth)
-  | `(expr| False) => `(expr| Formula.falsehood)
-  | `(expr| ¬ ?Q) => `(expr| Formula.not $(← reifyFormula Q vars))
-  | `(expr| ?Q1 ∧ ?Q2) => `(expr| Formula.and $(← reifyFormula Q1 vars) $(← reifyFormula Q2 vars))
-  | `(expr| ?Q1 ∨ ?Q2) => `(expr| Formula.or $(← reifyFormula Q1 vars) $(← reifyFormula Q2 vars))
+  | `(True) => `(expr| Formula.truth)
+  | `(False) => `(expr| Formula.falsehood)
+  | `(¬ ?Q) => `(expr| Formula.not $(← reifyFormula Q vars))
+  | `(?Q1 ∧ ?Q2) => `(expr| Formula.and $(← reifyFormula Q1 vars) $(← reifyFormula Q2 vars))
+  | `(?Q1 ∨ ?Q2) => `(expr| Formula.or $(← reifyFormula Q1 vars) $(← reifyFormula Q2 vars))
   | _ =>
     if let some (Q1, Q2) ← isPropImp? P then
       `(expr| Formula.imp $(← reifyFormula Q1 vars) $(← reifyFormula Q2 vars))
@@ -254,18 +254,18 @@ private def propositionalStep : TacticM Unit := withMainContext do
   let tgt ← getMainTarget
   let hyps ← localHypTypes (reverse := true)
   for case (h, `(expr/reducible| $tgt)) in hyps do g.assign h; replaceMainGoal []; return
-  match tgt with
-  | `(expr/reducible| True) => g.assign (mkConst ``True.intro); replaceMainGoal []; return
-  | `(expr/reducible| ?x = $x) => let _ := x; evalTactic (← `(tactic| rfl)); return
-  | `(expr/reducible| _ ∧ _) => replaceMainGoal (← g.apply (mkConst ``And.intro)); return
-  | `(expr/reducible| _ ↔ _) => replaceMainGoal (← g.apply (mkConst ``Iff.intro)); return
-  | `(expr/reducible| ¬ _) => evalTactic (← `(tactic| intro)); return
-  | `(expr/reducible| (?P : Prop) → _) => let _ := P; evalTactic (← `(tactic| intro)); return
+  match (modulo := reducible) tgt with
+  | `(True) => g.assign (mkConst ``True.intro); replaceMainGoal []; return
+  | `(?x = $x) => let _ := x; evalTactic (← `(tactic| rfl)); return
+  | `(_ ∧ _) => replaceMainGoal (← g.apply (mkConst ``And.intro)); return
+  | `(_ ↔ _) => replaceMainGoal (← g.apply (mkConst ``Iff.intro)); return
+  | `(¬ _) => evalTactic (← `(tactic| intro)); return
+  | `((?P : Prop) → _) => let _ := P; evalTactic (← `(tactic| intro)); return
   | _ => pure ()
   for (h, ty) in hyps do
-    match ty with
-    | `(expr/reducible| False) | `(expr/reducible| _ ∧ _)
-    | `(expr/reducible| _ ∨ _) | `(expr/reducible| Exists _) =>
+    match (modulo := reducible) ty with
+    | `(False) | `(_ ∧ _)
+    | `(_ ∨ _) | `(Exists _) =>
       replaceMainGoal ((← g.cases h.fvarId!).toList.map (·.mvarId)); return
     | _ => pure ()
   firstHyp fun h1 => fun
