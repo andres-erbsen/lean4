@@ -11,6 +11,7 @@ public import Lean.Elab.Tactic.FalseOrByContra
 import Lean.Elab.ConfigEval
 public import Lean.Meta.Tactic.Simp.Attr
 import Lean.Elab.Tactic.BuiltinTactic
+import Lean.Meta.ExprPatternCore
 import Init.Data.Int.Pow
 import Init.Data.List.MapIdx
 import Init.Data.Nat.Dvd
@@ -140,8 +141,8 @@ partial def asLinearComboImpl (e : Expr) : OmegaM (LinearCombo × OmegaM Expr ×
         rewrite e (← mkEqReflWithExpectedType e v)
       else
         mkAtomLinearCombo e
-    else match e.getAppFnArgs with
-  | (``HAdd.hAdd, #[_, _, _, _, e₁, e₂]) => do
+    else match (modulo := +inst) e with
+  | `((?e₁ : Int) + ?e₂) => do
     let (l₁, prf₁, facts₁) ← asLinearCombo e₁
     let (l₂, prf₂, facts₂) ← asLinearCombo e₂
     let prf : OmegaM Expr := do
@@ -151,7 +152,7 @@ partial def asLinearComboImpl (e : Expr) : OmegaM (LinearCombo × OmegaM Expr ×
         (← mkAppM ``Int.add_congr #[← prf₁, ← prf₂])
         (← mkEqSymm add_eval)
     pure (l₁ + l₂, prf, facts₁ ++ facts₂)
-  | (``HSub.hSub, #[_, _, _, _, e₁, e₂]) => do
+  | `((?e₁ : Int) - ?e₂) => do
     let (l₁, prf₁, facts₁) ← asLinearCombo e₁
     let (l₂, prf₂, facts₂) ← asLinearCombo e₂
     let prf : OmegaM Expr := do
@@ -161,7 +162,7 @@ partial def asLinearComboImpl (e : Expr) : OmegaM (LinearCombo × OmegaM Expr ×
         (← mkAppM ``Int.sub_congr #[← prf₁, ← prf₂])
         (← mkEqSymm sub_eval)
     pure (l₁ - l₂, prf, facts₁ ++ facts₂)
-  | (``Neg.neg, #[_, _, e']) => do
+  | `(- (?e' : Int)) => do
     let (l, prf, facts) ← asLinearCombo e'
     let prf' : OmegaM Expr := do
       let neg_eval := mkApp2 (.const ``LinearCombo.neg_eval []) (toExpr l) (← atomsCoeffs)
@@ -169,7 +170,7 @@ partial def asLinearComboImpl (e : Expr) : OmegaM (LinearCombo × OmegaM Expr ×
         (← mkAppM ``Int.neg_congr #[← prf])
         (← mkEqSymm neg_eval)
     pure (-l, prf', facts)
-  | (``HMul.hMul, #[_, _, _, _, x, y]) =>
+  | `((?x : Int) * ?y) =>
     -- If we decide not to expand out the multiplication,
     -- we have to revert the `OmegaM` state so that any new facts about the factors
     -- can still be reported when they are visited elsewhere.
@@ -192,13 +193,13 @@ partial def asLinearComboImpl (e : Expr) : OmegaM (LinearCombo × OmegaM Expr ×
     match r? with
     | some r => pure r
     | none => mkAtomLinearCombo e
-  | (``HMod.hMod, #[_, _, _, _, n, k]) =>
+  | `((?n : Int) % ?k) =>
     match groundNat? k with
     | some k' => do
       let k' := toExpr (k' : Int)
       rewrite (← mkAppM ``HMod.hMod #[n, k']) (mkApp2 (.const ``Int.emod_def []) n k')
     | none => mkAtomLinearCombo e
-  | (``HDiv.hDiv, #[_, _, _, _, x, z]) =>
+  | `((?x : Int) / ?z) =>
     match groundInt? z with
     | some 0 => rewrite e (mkApp (.const ``Int.ediv_zero []) x)
     | some i => do
@@ -208,36 +209,29 @@ partial def asLinearComboImpl (e : Expr) : OmegaM (LinearCombo × OmegaM Expr ×
       else
         mkAtomLinearCombo e'
     | _ => mkAtomLinearCombo e
-  | (``Min.min, #[_, _, a, b]) =>
+  | `(min (?a : Int) ?b) =>
     if (← cfg).splitMinMax then
       rewrite e (mkApp2 (.const ``Int.min_def []) a b)
     else
       mkAtomLinearCombo e
-  | (``Max.max, #[_, _, a, b]) =>
+  | `(max (?a : Int) ?b) =>
     if (← cfg).splitMinMax then
       rewrite e (mkApp2 (.const ``Int.max_def []) a b)
     else
       mkAtomLinearCombo e
-  | (``HPow.hPow, #[_, _, _, _, b, k]) =>
+  | `((?b : Int) ^ (?k : Nat)) =>
     match succ? k with /- match for `e+1` and `e.succ` -/
     | none => mkAtomLinearCombo e
     | some k' =>
         match groundInt? b with
         | some _ => rewrite e (mkApp2 (.const ``Int.pow_succ []) b k')
         | none => mkAtomLinearCombo e
-  | (``Nat.cast, #[α, i, n]) =>
-      match_expr α with
-      | Int => handleNatCast e i n
-      | _ => mkAtomLinearCombo e
-  | (``Prod.fst, #[α, β, p]) => match p with
-    | .app (.app (.app (.app (.const ``Prod.mk [u, v]) _) _) x) y =>
-      rewrite e (mkApp4 (.const ``Prod.fst_mk [u, v]) α x β y)
-    | _ => mkAtomLinearCombo e
-  | (``Prod.snd, #[α, β, p]) => match p with
-    | .app (.app (.app (.app (.const ``Prod.mk [u, v]) _) _) x) y =>
-      rewrite e (mkApp4 (.const ``Prod.snd_mk [u, v]) α x β y)
-    | _ => mkAtomLinearCombo e
-  | (``Int.negSucc, #[n]) => rewrite e (mkApp (.const ``Int.negSucc_eq []) n)
+  | `(((?n : Nat) : Int)) => handleNatCast e n
+  | `(@Prod.fst ?α ?β (?x, ?y)) =>
+    rewrite e (mkApp4 (.const ``Prod.fst_mk [← getDecLevel α, ← getDecLevel β]) α x β y)
+  | `(@Prod.snd ?α ?β (?x, ?y)) =>
+    rewrite e (mkApp4 (.const ``Prod.snd_mk [← getDecLevel α, ← getDecLevel β]) α x β y)
+  | `(Int.negSucc ?n) => rewrite e (mkApp (.const ``Int.negSucc_eq []) n)
   | _ => mkAtomLinearCombo e
 where
   /--
@@ -252,82 +246,83 @@ where
       let prf' : OmegaM Expr := do mkEqTrans rw (← prf)
       pure (lc, prf', facts)
     | none => panic! "Invalid rewrite rule in `asLinearCombo`"
-  handleNatCast (e i n : Expr) : OmegaM (LinearCombo × OmegaM Expr × List Expr) := do
-    match n with
+  handleNatCast (e n : Expr) : OmegaM (LinearCombo × OmegaM Expr × List Expr) := do
+    match (modulo := +inst) n with
     | .fvar h =>
       if let some v ← h.getValue? then
         rewrite e (← mkEqReflWithExpectedType e
-          (mkApp3 (.const ``Nat.cast [0]) (.const ``Int []) i v))
+          (mkApp3 (.const ``Nat.cast [0]) (.const ``Int []) (mkConst ``instNatCastInt) v))
       else
         mkAtomLinearCombo e
-    | _ => match n.getAppFnArgs with
-    | (``Nat.succ, #[n]) => rewrite e (.app (.const ``Int.natCast_succ []) n)
-    | (``HAdd.hAdd, #[_, _, _, _, a, b]) => rewrite e (mkApp2 (.const ``Int.natCast_add []) a b)
-    | (``HMul.hMul, #[_, _, _, _, a, b]) =>
+    | `(Nat.succ ?n) => rewrite e (.app (.const ``Int.natCast_succ []) n)
+    | `((?a : Nat) + ?b) => rewrite e (mkApp2 (.const ``Int.natCast_add []) a b)
+    | `((?a : Nat) * ?b) =>
       let (lc, prf, r) ← rewrite e (mkApp2 (.const ``Int.natCast_mul []) a b)
       -- Add the fact that the multiplication is non-negative.
       pure (lc, prf, r.insert (mkApp2 (.const ``Int.ofNat_mul_nonneg []) a b))
-    | (``HDiv.hDiv, #[_, _, _, _, a, b]) => rewrite e (mkApp2 (.const ``Int.natCast_ediv []) a b)
-    | (``OfNat.ofNat, #[_, n, _]) => rewrite e (.app (.const ``Int.natCast_ofNat []) n)
-    | (``HMod.hMod, #[_, _, _, _, a, b]) => rewrite e (mkApp2 (.const ``Int.natCast_emod []) a b)
-    | (``HSub.hSub, #[_, _, _, _, mkApp6 (.const ``HSub.hSub _) _ _ _ _ a b, c]) =>
+    | `((?a : Nat) / ?b) => rewrite e (mkApp2 (.const ``Int.natCast_ediv []) a b)
+    | `(@OfNat.ofNat Nat ?n _) => rewrite e (.app (.const ``Int.natCast_ofNat []) n)
+    | `((?a : Nat) % ?b) => rewrite e (mkApp2 (.const ``Int.natCast_emod []) a b)
+    | `((?a - ?b : Nat) - ?c) =>
       rewrite e (mkApp3 (.const ``Int.ofNat_sub_sub []) a b c)
-    | (``HPow.hPow, #[_, _, _, _, a, b]) =>
+    | `((?a : Nat) ^ (?b : Nat)) =>
       match groundNat? a with
       | some _ => rewrite e (mkApp2 (.const ``Int.ofNat_pow []) a b)
       | none => mkAtomLinearCombo e
-    | (``Prod.fst, #[_, β, p]) => match p with
-      | .app (.app (.app (.app (.const ``Prod.mk [0, v]) _) _) x) y =>
-        rewrite e (mkApp3 (.const ``Int.ofNat_fst_mk [v]) β x y)
-      | _ => mkAtomLinearCombo e
-    | (``Prod.snd, #[α, _, p]) => match p with
-      | .app (.app (.app (.app (.const ``Prod.mk [u, 0]) _) _) x) y =>
-        rewrite e (mkApp3 (.const ``Int.ofNat_snd_mk [u]) α x y)
-      | _ => mkAtomLinearCombo e
-    | (``Min.min, #[_, _, a, b]) => rewrite e (mkApp2 (.const ``Int.ofNat_min []) a b)
-    | (``Max.max, #[_, _, a, b]) => rewrite e (mkApp2 (.const ``Int.ofNat_max []) a b)
-    | (``Int.toNat, #[n]) => rewrite e (mkApp (.const ``Int.toNat_eq_max []) n)
-    | (``HShiftLeft.hShiftLeft, #[_, _, _, _, a, b]) =>
+    | `(@Prod.fst Nat ?β (?x, ?y)) =>
+      rewrite e (mkApp3 (.const ``Int.ofNat_fst_mk [← getDecLevel β]) β x y)
+    | `(@Prod.snd ?α Nat (?x, ?y)) =>
+      rewrite e (mkApp3 (.const ``Int.ofNat_snd_mk [← getDecLevel α]) α x y)
+    | `(min (?a : Nat) ?b) => rewrite e (mkApp2 (.const ``Int.ofNat_min []) a b)
+    | `(max (?a : Nat) ?b) => rewrite e (mkApp2 (.const ``Int.ofNat_max []) a b)
+    | `(Int.toNat ?n) => rewrite e (mkApp (.const ``Int.toNat_eq_max []) n)
+    | `((?a : Nat) <<< ?b) =>
       rewrite e (mkApp2 (.const ``Int.ofNat_shiftLeft_eq []) a b)
-    | (``HShiftRight.hShiftRight, #[_, _, _, _, a, b]) =>
+    | `((?a : Nat) >>> ?b) =>
       rewrite e (mkApp2 (.const ``Int.ofNat_shiftRight_eq_div_pow []) a b)
-    | (``Int.natAbs, #[n]) =>
+    | `(Int.natAbs ?n) =>
       if (← cfg).splitNatAbs then
         rewrite e (mkApp (.const ``Int.ofNat_natAbs []) n)
       else
         mkAtomLinearCombo e
-    | (``Fin.val, #[n, x]) =>
-      handleFinVal e i n x
+    | `((?x : Fin ?n).val) => handleFinVal e n x
     | _ => mkAtomLinearCombo e
-  handleFinVal (e i n x : Expr) : OmegaM (LinearCombo × OmegaM Expr × List Expr) := do
-    match x with
+  handleFinVal (e n x : Expr) : OmegaM (LinearCombo × OmegaM Expr × List Expr) := do
+    match (modulo := +inst) x with
     | .fvar h =>
       if let some v ← h.getValue? then
         rewrite e (← mkEqReflWithExpectedType e
-          (mkApp3 (.const ``Nat.cast [0]) (.const ``Int []) i (mkApp2 (.const ``Fin.val []) n v)))
+          (mkApp3 (.const ``Nat.cast [0]) (.const ``Int []) (mkConst ``instNatCastInt)
+            (mkApp2 (.const ``Fin.val []) n v)))
       else
         mkAtomLinearCombo e
-    | _ => match x.getAppFnArgs, n.nat? with
-      | (``HAdd.hAdd, #[_, _, _, _, a, b]), _ =>
-        rewrite e (mkApp3 (.const ``Fin.ofNat_val_add []) n a b)
-      | (``HMul.hMul, #[_, _, _, _, a, b]), _ =>
-        rewrite e (mkApp3 (.const ``Fin.ofNat_val_mul []) n a b)
-      | (``HSub.hSub, #[_, _, _, _, a, b]), some _ =>
-        -- Only do this rewrite if `n` is a numeral.
+    | `((?a : Fin _) + ?b) =>
+      rewrite e (mkApp3 (.const ``Fin.ofNat_val_add []) n a b)
+    | `((?a : Fin _) * ?b) =>
+      rewrite e (mkApp3 (.const ``Fin.ofNat_val_mul []) n a b)
+    | `((?a : Fin _) - ?b) =>
+      -- Only do this rewrite if `n` is a numeral.
+      if n.nat?.isSome then
         rewrite e (mkApp3 (.const ``Fin.ofNat_val_sub []) n a b)
-      | (``OfNat.ofNat, #[_, y, _]), some m =>
-        -- Only do this rewrite if `n` is a nonzero numeral.
+      else
+        mkAtomLinearCombo e
+    | `(@OfNat.ofNat (Fin _) ?y _) =>
+      -- Only do this rewrite if `n` is a nonzero numeral.
+      if let some m := n.nat? then
         if m = 0 then
           mkAtomLinearCombo e
         else
           match y with
           | .lit (.natVal y) =>
             rewrite e (mkApp4 (.const ``Fin.ofNat_val_natCast [])
-              (toExpr (m - 1)) (toExpr y) (.lit (.natVal (y % m))) (← mkEqRefl (toExpr (y % m))))
+              (toExpr (m - 1)) (toExpr y) (.lit (.natVal (y % m)))
+              (← mkEqRefl (toExpr (y % m))))
           | _ =>
             -- This shouldn't happen, we obtained `y` from `OfNat.ofNat`
             mkAtomLinearCombo e
-      | _, _ => mkAtomLinearCombo e
+      else
+        mkAtomLinearCombo e
+    | _ => mkAtomLinearCombo e
 
 end
 namespace MetaProblem
@@ -372,51 +367,43 @@ def addIntInequality (p : MetaProblem) (h y : Expr) : OmegaM MetaProblem := do
 def pushNot (h P : Expr) : MetaM (Option Expr) := do
   let P ← whnfR P
   trace[omega] "pushing negation: {P}"
-  match P with
+  match (modulo := +inst) P with
   | .forallE _ t b _ =>
     if (← isProp t) && (← isProp b) then
-     return some (mkApp4 (.const ``Decidable.and_not_of_not_imp []) t b
-      (.app (.const ``Classical.propDecidable []) t) h)
+      return some (mkApp4 (.const ``Decidable.and_not_of_not_imp []) t b
+        (.app (.const ``Classical.propDecidable []) t) h)
     else
       return none
-  | .app _ _ =>
-    match_expr P with
-    | LT.lt α _ x y => match_expr α with
-      | Nat => return some (mkApp3 (.const ``Nat.le_of_not_lt []) x y h)
-      | Int => return some (mkApp3 (.const ``Int.le_of_not_lt []) x y h)
-      | Fin n => return some (mkApp4 (.const ``Fin.le_of_not_lt []) n x y h)
-      | _ => return none
-    | LE.le α _ x y => match_expr α with
-      | Nat => return some (mkApp3 (.const ``Nat.lt_of_not_le []) x y h)
-      | Int => return some (mkApp3 (.const ``Int.lt_of_not_le []) x y h)
-      | Fin n => return some (mkApp4 (.const ``Fin.lt_of_not_le []) n x y h)
-      | _ => return none
-    | Eq α x y => match_expr α with
-      | Nat => return some (mkApp3 (.const ``Nat.lt_or_gt_of_ne []) x y h)
-      | Int => return some (mkApp3 (.const ``Int.lt_or_gt_of_ne []) x y h)
-      | Fin n => return some (mkApp4 (.const ``Fin.lt_or_gt_of_ne []) n x y h)
-      | _ => return none
-    | Dvd.dvd α _ k x => match_expr α with
-      | Nat => return some (mkApp3 (.const ``Nat.emod_pos_of_not_dvd []) k x h)
-      | Int =>
-        -- This introduces a disjunction that could be avoided by checking `k ≠ 0`.
-        return some (mkApp3 (.const ``Int.emod_pos_of_not_dvd []) k x h)
-      | _ => return none
-    | Prod.Lex _ _ _ _ _ _ => return some (← mkAppM ``Prod.of_not_lex #[h])
-    | Not P =>
-      return some (mkApp3 (.const ``Decidable.of_not_not []) P
-        (.app (.const ``Classical.propDecidable []) P) h)
-    | And P Q =>
-      return some (mkApp5 (.const ``Decidable.or_not_not_of_not_and []) P Q
-        (.app (.const ``Classical.propDecidable []) P)
-        (.app (.const ``Classical.propDecidable []) Q) h)
-    | Or P Q =>
-      return some (mkApp3 (.const ``and_not_not_of_not_or []) P Q h)
-    | Iff P Q =>
-      return some (mkApp5 (.const ``Decidable.and_not_or_not_and_of_not_iff []) P Q
-        (.app (.const ``Classical.propDecidable []) P)
-        (.app (.const ``Classical.propDecidable []) Q) h)
-    | _ => return none
+  | `((?x : Nat) < ?y) => return some (mkApp3 (.const ``Nat.le_of_not_lt []) x y h)
+  | `((?x : Int) < ?y) => return some (mkApp3 (.const ``Int.le_of_not_lt []) x y h)
+  | `((?x : Fin ?n) < ?y) =>
+    return some (mkApp4 (.const ``Fin.le_of_not_lt []) n x y h)
+  | `((?x : Nat) ≤ ?y) => return some (mkApp3 (.const ``Nat.lt_of_not_le []) x y h)
+  | `((?x : Int) ≤ ?y) => return some (mkApp3 (.const ``Int.lt_of_not_le []) x y h)
+  | `((?x : Fin ?n) ≤ ?y) =>
+    return some (mkApp4 (.const ``Fin.lt_of_not_le []) n x y h)
+  | `((?x : Nat) = ?y) => return some (mkApp3 (.const ``Nat.lt_or_gt_of_ne []) x y h)
+  | `((?x : Int) = ?y) => return some (mkApp3 (.const ``Int.lt_or_gt_of_ne []) x y h)
+  | `((?x : Fin ?n) = ?y) =>
+    return some (mkApp4 (.const ``Fin.lt_or_gt_of_ne []) n x y h)
+  | `((?k : Nat) ∣ ?x) =>
+    return some (mkApp3 (.const ``Nat.emod_pos_of_not_dvd []) k x h)
+  | `((?k : Int) ∣ ?x) =>
+    -- This introduces a disjunction that could be avoided by checking `k ≠ 0`.
+    return some (mkApp3 (.const ``Int.emod_pos_of_not_dvd []) k x h)
+  | `(Prod.Lex ..) => return some (← mkAppM ``Prod.of_not_lex #[h])
+  | `(¬ ?P) =>
+    return some (mkApp3 (.const ``Decidable.of_not_not []) P
+      (.app (.const ``Classical.propDecidable []) P) h)
+  | `(?P ∧ ?Q) =>
+    return some (mkApp5 (.const ``Decidable.or_not_not_of_not_and []) P Q
+      (.app (.const ``Classical.propDecidable []) P)
+      (.app (.const ``Classical.propDecidable []) Q) h)
+  | `(?P ∨ ?Q) => return some (mkApp3 (.const ``and_not_not_of_not_or []) P Q h)
+  | `(?P ↔ ?Q) =>
+    return some (mkApp5 (.const ``Decidable.and_not_or_not_and_of_not_iff []) P Q
+      (.app (.const ``Classical.propDecidable []) P)
+      (.app (.const ``Classical.propDecidable []) Q) h)
   | _ => return none
 
 /--
@@ -428,7 +415,7 @@ partial def addFact (p : MetaProblem) (h : Expr) : OmegaM (MetaProblem × Nat) :
   else
     let t ← instantiateMVars (← whnfR (← inferType h))
     trace[omega] "adding fact: {t}"
-    match t with
+    match (modulo := +inst) t with
     | .forallE _ x y _ =>
       if ← pure t.isArrow <&&> isProp x <&&> isProp y then
         p.addFact (mkApp4 (.const ``Decidable.not_or_of_imp []) x y
@@ -436,75 +423,70 @@ partial def addFact (p : MetaProblem) (h : Expr) : OmegaM (MetaProblem × Nat) :
       else
         trace[omega] "rejecting forall: it's not an arrow, or not propositional"
         return (p, 0)
-    | .app _ _ =>
-      match_expr t with
-      | Eq α x y =>
-        match_expr α with
-        | Int =>
-          match y.int? with
-          | some 0 => pure (← p.addIntEquality h x, 1)
-          | _ => p.addFact (mkApp3 (.const ``Int.sub_eq_zero_of_eq []) x y h)
-        | Nat => p.addFact (mkApp3 (.const ``Int.ofNat_congr []) x y h)
-        | Fin n => p.addFact (mkApp4 (.const ``Fin.val_congr []) n x y h)
-        | _ => pure (p, 0)
-      | LE.le α _ x y =>
-        match_expr α with
-        | Int =>
-          match x.int? with
-          | some 0 => pure (← p.addIntInequality h y, 1)
-          | _ => p.addFact (mkApp3 (.const ``Int.sub_nonneg_of_le []) y x h)
-        | Nat => p.addFact (mkApp3 (.const ``Int.ofNat_le_of_le []) x y h)
-        | Fin n => p.addFact (mkApp4 (.const ``Fin.val_le_of_le []) n x y h)
-        | _ => pure (p, 0)
-      | LT.lt α _ x y =>
-        match_expr α with
-        | Int => p.addFact (mkApp3 (.const ``Int.add_one_le_of_lt []) x y h)
-        | Nat => p.addFact (mkApp3 (.const ``Int.ofNat_lt_of_lt []) x y h)
-        | Fin n => p.addFact (mkApp4 (.const ``Fin.val_add_one_le_of_lt []) n x y h)
-        | _ => pure (p, 0)
-      | GT.gt α _ x y =>
-        match_expr α with
-        | Int => p.addFact (mkApp3 (.const ``Int.lt_of_gt []) x y h)
-        | Nat => p.addFact (mkApp3 (.const ``Nat.lt_of_gt []) x y h)
-        | Fin n => p.addFact (mkApp4 (.const ``Fin.val_add_one_le_of_gt []) n x y h)
-        | _ => pure (p, 0)
-      | GE.ge α _ x y =>
-        match_expr α with
-        | Int => p.addFact (mkApp3 (.const ``Int.le_of_ge []) x y h)
-        | Nat => p.addFact (mkApp3 (.const ``Nat.le_of_ge []) x y h)
-        | Fin n => p.addFact (mkApp4 (.const ``Fin.val_le_of_ge []) n x y h)
-        | _ => pure (p, 0)
-      | Ne α x y =>
-        match_expr α with
-        | Int => p.addFact (mkApp3 (.const ``Int.lt_or_gt_of_ne []) x y h)
-        | Nat => p.addFact (mkApp3 (.const ``Nat.lt_or_gt_of_ne []) x y h)
-        | _ => pure (p, 0)
-      | Dvd.dvd α _ k x =>
-        match_expr α with
-        | Int => p.addFact (mkApp3 (.const ``Int.emod_eq_zero_of_dvd []) k x h)
-        | Nat => p.addFact (mkApp3 (.const ``Nat.mod_eq_zero_of_dvd []) k x h)
-        | _ => pure (p, 0)
-      | Not P => match ← pushNot h P with
-        | none => return (p, 0)
-        | some h' => p.addFact h'
-      | Prod.Lex _ _ _ _ _ _ => p.addFact (← mkAppM ``Prod.of_lex #[h])
-      | And t₁ t₂ => do
-          let (p₁, n₁) ← p.addFact (mkApp3 (.const ``And.left []) t₁ t₂ h)
-          let (p₂, n₂) ← p₁.addFact (mkApp3 (.const ``And.right []) t₁ t₂ h)
-          return (p₂, n₁ + n₂)
-      | Exists α P =>
-        p.addFact (mkApp3 (.const ``Exists.choose_spec [← getLevel α]) α P h)
-      | Subtype α P =>
-        p.addFact (mkApp3 (.const ``Subtype.property [← getLevel α]) α P h)
-      | Iff P₁ P₂ =>
-        p.addFact (mkApp4 (.const ``Decidable.and_or_not_and_not_of_iff [])
-          P₁ P₂ (.app (.const ``Classical.propDecidable []) P₂) h)
-      | Or _ _ =>
-        if (← cfg).splitDisjunctions then
-          return ({ p with disjunctions := p.disjunctions.insert h }, 1)
-        else
-          return (p, 0)
-      | _ => pure (p, 0)
+    | `((?x : Int) = ?y) =>
+      match y.int? with
+      | some 0 => pure (← p.addIntEquality h x, 1)
+      | _ => p.addFact (mkApp3 (.const ``Int.sub_eq_zero_of_eq []) x y h)
+    | `((?x : Nat) = ?y) =>
+      p.addFact (mkApp3 (.const ``Int.ofNat_congr []) x y h)
+    | `((?x : Fin ?n) = ?y) =>
+      p.addFact (mkApp4 (.const ``Fin.val_congr []) n x y h)
+    | `((?x : Int) ≤ ?y) =>
+      match x.int? with
+      | some 0 => pure (← p.addIntInequality h y, 1)
+      | _ => p.addFact (mkApp3 (.const ``Int.sub_nonneg_of_le []) y x h)
+    | `((?x : Nat) ≤ ?y) =>
+      p.addFact (mkApp3 (.const ``Int.ofNat_le_of_le []) x y h)
+    | `((?x : Fin ?n) ≤ ?y) =>
+      p.addFact (mkApp4 (.const ``Fin.val_le_of_le []) n x y h)
+    | `((?x : Int) < ?y) =>
+      p.addFact (mkApp3 (.const ``Int.add_one_le_of_lt []) x y h)
+    | `((?x : Nat) < ?y) =>
+      p.addFact (mkApp3 (.const ``Int.ofNat_lt_of_lt []) x y h)
+    | `((?x : Fin ?n) < ?y) =>
+      p.addFact (mkApp4 (.const ``Fin.val_add_one_le_of_lt []) n x y h)
+    | `((?x : Int) > ?y) =>
+      p.addFact (mkApp3 (.const ``Int.lt_of_gt []) x y h)
+    | `((?x : Nat) > ?y) =>
+      p.addFact (mkApp3 (.const ``Nat.lt_of_gt []) x y h)
+    | `((?x : Fin ?n) > ?y) =>
+      p.addFact (mkApp4 (.const ``Fin.val_add_one_le_of_gt []) n x y h)
+    | `((?x : Int) ≥ ?y) =>
+      p.addFact (mkApp3 (.const ``Int.le_of_ge []) x y h)
+    | `((?x : Nat) ≥ ?y) =>
+      p.addFact (mkApp3 (.const ``Nat.le_of_ge []) x y h)
+    | `((?x : Fin ?n) ≥ ?y) =>
+      p.addFact (mkApp4 (.const ``Fin.val_le_of_ge []) n x y h)
+    | `((?x : Int) ≠ ?y) =>
+      p.addFact (mkApp3 (.const ``Int.lt_or_gt_of_ne []) x y h)
+    | `((?x : Nat) ≠ ?y) =>
+      p.addFact (mkApp3 (.const ``Nat.lt_or_gt_of_ne []) x y h)
+    | `((?k : Int) ∣ ?x) =>
+      p.addFact (mkApp3 (.const ``Int.emod_eq_zero_of_dvd []) k x h)
+    | `((?k : Nat) ∣ ?x) =>
+      p.addFact (mkApp3 (.const ``Nat.mod_eq_zero_of_dvd []) k x h)
+    | `(¬ ?P) =>
+      match ← pushNot h P with
+      | none => return (p, 0)
+      | some h' => p.addFact h'
+    | `(Prod.Lex ..) =>
+      p.addFact (← mkAppM ``Prod.of_lex #[h])
+    | `(?t₁ ∧ ?t₂) => do
+      let (p₁, n₁) ← p.addFact (mkApp3 (.const ``And.left []) t₁ t₂ h)
+      let (p₂, n₂) ← p₁.addFact (mkApp3 (.const ``And.right []) t₁ t₂ h)
+      return (p₂, n₁ + n₂)
+    | `(@Exists ?α ?P) =>
+      p.addFact (mkApp3 (.const ``Exists.choose_spec [← getLevel α]) α P h)
+    | `(@Subtype ?α ?P) =>
+      p.addFact (mkApp3 (.const ``Subtype.property [← getLevel α]) α P h)
+    | `(?P₁ ↔ ?P₂) =>
+      p.addFact (mkApp4 (.const ``Decidable.and_or_not_and_not_of_iff [])
+        P₁ P₂ (.app (.const ``Classical.propDecidable []) P₂) h)
+    | `(_ ∨ _) =>
+      if (← cfg).splitDisjunctions then
+        return ({ p with disjunctions := p.disjunctions.insert h }, 1)
+      else
+        return (p, 0)
     | _ => pure (p, 0)
 
 /--
