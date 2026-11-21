@@ -9,6 +9,7 @@ prelude
 public import Lean.Meta.AppBuilder
 public import Lean.Meta.Canonicalizer
 public import Init.Omega
+import Lean.Meta.ExprPatternCore
 
 public section
 
@@ -164,24 +165,26 @@ Analyzes a newly recorded atom,
 returning a collection of interesting facts about it that should be added to the context.
 -/
 def analyzeAtom (e : Expr) : OmegaM (List Expr) := do
-  match e.getAppFnArgs with
-  | (``Nat.cast, #[.const ``Int [], _, e']) =>
+  match (modulo := +inst) e with
+  | `(((?e' : Nat) : Int)) =>
     -- Casts of natural numbers are non-negative.
     let mut r := [Expr.app (.const ``Int.natCast_nonneg []) e']
-    match (← cfg).splitNatSub, e'.getAppFnArgs with
-      | true, (``HSub.hSub, #[_, _, _, _, a, b]) =>
+    match (modulo := +inst) e' with
+    | `((?a : Nat) - ?b) =>
+      if (← cfg).splitNatSub then
         -- `((a - b : Nat) : Int)` gives a dichotomy
         r := r.insert (mkApp2 (.const ``Int.ofNat_sub_dichotomy []) a b)
-      | _, (``Int.natAbs, #[x]) =>
-        r := r.insert (mkApp (.const ``Int.le_natAbs []) x)
-        r := r.insert (mkApp (.const ``Int.neg_le_natAbs []) x)
-      | _, (``Fin.val, #[n, i]) =>
-        r := r.insert (mkApp2 (.const ``Fin.isLt []) n i)
-      | _, (``BitVec.toNat, #[n, x]) =>
-        r := r.insert (mkApp2 (.const ``BitVec.isLt []) n x)
-      | _, _ => pure ()
+    | `(Int.natAbs ?x) =>
+      r := r.insert (mkApp (.const ``Int.le_natAbs []) x)
+      r := r.insert (mkApp (.const ``Int.neg_le_natAbs []) x)
+    | `((?i : Fin ?n).val) =>
+      r := r.insert (mkApp2 (.const ``Fin.isLt []) n i)
+    | `((?x : BitVec ?n).toNat) =>
+      r := r.insert (mkApp2 (.const ``BitVec.isLt []) n x)
+    | _ => pure ()
     return r
-  | (``HDiv.hDiv, #[_, _, _, _, x, k]) => match natCast? k with
+  | `((?x : Int) / ?k) =>
+    match natCast? k with
     | none
     | some 0 => pure ∅
     | some _ =>
@@ -191,21 +194,24 @@ def analyzeAtom (e : Expr) : OmegaM (List Expr) := do
         (toExpr (0 : Int)) k
       pure [mkApp3 (.const ``Int.mul_ediv_self_le []) x k (← mkDecideProof ne_zero),
             mkApp3 (.const ``Int.lt_mul_ediv_self_add []) x k (← mkDecideProof pos)]
-  | (``HMod.hMod, #[_, _, _, _, x, k]) =>
-    match k.getAppFnArgs with
-    | (``HPow.hPow, #[_, _, _, _, b, exp]) => match natCast? b with
+  | `((?x : Int) % ?k) =>
+    match (modulo := +inst) k with
+    | `((?b : Int) ^ (?exp : Nat)) =>
+      match natCast? b with
       | none
       | some 0 => pure ∅
       | some _ =>
         let b_pos := mkApp4 (.const ``LT.lt [0]) (.const ``Int []) (.const ``Int.instLTInt [])
           (toExpr (0 : Int)) b
-        let pow_pos := mkApp3 (.const ``Lean.Omega.Int.pos_pow_of_pos []) b exp (← mkDecideProof b_pos)
+        let pow_pos :=
+          mkApp3 (.const ``Lean.Omega.Int.pos_pow_of_pos []) b exp (← mkDecideProof b_pos)
         pure [mkApp3 (.const ``Int.emod_nonneg []) x k
                 (mkApp3 (.const ``Int.ne_of_gt []) k (toExpr (0 : Int)) pow_pos),
               mkApp3 (.const ``Int.emod_lt_of_pos []) x k pow_pos]
-    | (``Nat.cast, #[.const ``Int [], _, k']) =>
-      match k'.getAppFnArgs with
-      | (``HPow.hPow, #[_, _, _, _, b, exp]) => match natCast? b with
+    | `(((?k' : Nat) : Int)) =>
+      match (modulo := +inst) k' with
+      | `((?b : Nat) ^ (?exp : Nat)) =>
+        match natCast? b with
         | none
         | some 0 => pure ∅
         | some _ =>
@@ -216,22 +222,20 @@ def analyzeAtom (e : Expr) : OmegaM (List Expr) := do
           pure [mkApp3 (.const ``Int.emod_nonneg []) x k
                   (mkApp3 (.const ``Int.ne_of_gt []) k (toExpr (0 : Int)) cast_pos),
                 mkApp3 (.const ``Int.emod_lt_of_pos []) x k cast_pos]
-      | _ =>  match x.getAppFnArgs with
-        | (``Nat.cast, #[.const ``Int [], _, x']) =>
+      | _ =>
+        if let `(expr +inst| ((?x' : Nat) : Int)) := x then
           -- Since we push coercions inside `%`, we need to record here that
           -- `(x : Int) % (y : Int)` is non-negative.
           pure [mkApp2 (.const ``Int.emod_ofNat_nonneg []) x' k]
-        | _ => pure ∅
+        else
+          pure ∅
     | _ => pure ∅
-  | (``Min.min, #[_, _, x, y]) =>
+  | `(min (?x : Int) ?y) =>
     pure [mkApp2 (.const ``Int.min_le_left []) x y, mkApp2 (.const ``Int.min_le_right []) x y]
-  | (``Max.max, #[_, _, x, y]) =>
+  | `(max (?x : Int) ?y) =>
     pure [mkApp2 (.const ``Int.le_max_left []) x y, mkApp2 (.const ``Int.le_max_right []) x y]
-  | (``ite, #[α, i, dec, t, e]) =>
-      if α == (.const ``Int []) then
-        pure [mkApp5 (.const ``ite_disjunction [0]) α i dec t e]
-      else
-        pure []
+  | `(@ite Int ?c ?dec ?t ?f) =>
+    pure [mkApp5 (.const ``ite_disjunction [0]) (.const ``Int []) c dec t f]
   | _ => pure ∅
 
 /--
