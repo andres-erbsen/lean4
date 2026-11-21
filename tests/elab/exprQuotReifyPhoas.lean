@@ -113,9 +113,9 @@ theorem eq_of_norm (T₁ T₂ : ClosedTerm s)
 
 partial def reifySort (e : Expr) : MetaM SmtSort := do
   match ← instantiateMVars e with
-  | `(expr| Bool) => return .bool
-  | `(expr| Int) => return .int
-  | `(expr| ?a → ?b) => return .arr (← reifySort a) (← reifySort b)
+  | `(Bool) => return .bool
+  | `(Int) => return .int
+  | `(?a → ?b) => return .arr (← reifySort a) (← reifySort b)
   | e => throwError "smt_norm: unsupported sort{indentExpr e}"
 
 /-- Reifier context: the `rep` binder, object-binder map, and combinators to unfold. -/
@@ -133,22 +133,22 @@ partial def reify (ctx : Ctx) (e : Expr) : MetaM (SmtSort × Expr) := do
     return (s, ← `(expr| @Term.var $rep $(toExpr s) $rx))
   if let some i := e.int? then return (.int, ← `(expr| @Term.intLit $rep $(toExpr i)))
   match e with
-  | `(expr| true) => return (.bool, ← `(expr| @Term.boolLit $rep true))
-  | `(expr| false) => return (.bool, ← `(expr| @Term.boolLit $rep false))
-  | `(expr| !(?b : Bool)) => return (.bool, ← `(expr| @Term.not $rep $((← reify ctx b).2)))
-  | `(expr| @ite (_ : Type) ((?c : Bool) = true) _ ?x ?y) =>
+  | `(true) => return (.bool, ← `(expr| @Term.boolLit $rep true))
+  | `(false) => return (.bool, ← `(expr| @Term.boolLit $rep false))
+  | `(!(?b : Bool)) => return (.bool, ← `(expr| @Term.not $rep $((← reify ctx b).2)))
+  | `(@ite (_ : Type) ((?c : Bool) = true) _ ?x ?y) =>
     let (s, x) ← reify ctx x
     let c := (← reify ctx c).2; let y := (← reify ctx y).2
     return (s, ← `(expr| @Term.ite $rep $(toExpr s) $c $x $y))
-  | `(expr| (?a : Int) == ?b) =>
+  | `((?a : Int) == ?b) =>
     return (.bool, ← `(expr| @Term.eq $rep $((← reify ctx a).2) $((← reify ctx b).2)))
-  | `(expr| (?a : Int) + ?b) =>
+  | `((?a : Int) + ?b) =>
     return (.int, ← `(expr| @Term.add $rep $((← reify ctx a).2) $((← reify ctx b).2)))
-  | `(expr| fun (x : (?α : Type)) => ?P x) =>
+  | `(fun (x : (?α : Type)) => ?P x) =>
     let n := match e.consumeMData with | .lam n .. => n | _ => `x
     let (a, b, f) ← reifyBinder ctx n α fun x => P.beta #[x]
     return (.arr a b, ← `(expr| @Term.lam $rep $(toExpr a) $(toExpr b) $f))
-  | `(expr| let y : (?α : Type) := ?v; ?P y) =>
+  | `(let y : (?α : Type) := ?v; ?P y) =>
     let v := (← reify ctx v).2
     let n := match e.consumeMData with | .letE n .. => n | _ => `y
     let (a, b, f) ← reifyBinder ctx n α fun y => P.beta #[y]
@@ -186,7 +186,7 @@ syntax (name := smtNorm) "smt_norm" (" [" ident,* "]")? : tactic
   let ids := if stx[1].isNone then #[] else stx[1][1].getSepArgs
   let unfold ← ids.foldlM (init := {}) fun s id =>
     return s.insert (← realizeGlobalConstNoOverloadWithInfo id)
-  let `(expr| @Eq (?α : Type) ?lhs ?rhs) ← getMainTarget
+  let `(@Eq (?α : Type) ?lhs ?rhs) ← getMainTarget
     | throwError "smt_norm: expected an equation"
   let s ← reifySort α
   let pf ← `(expr| @eq_of_norm $(toExpr s) $((← reifyClosed lhs unfold).2)

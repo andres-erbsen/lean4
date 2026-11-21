@@ -50,6 +50,27 @@ private abbrev mkConst (n : Name) (us : List Level := []) : Expr :=
 def isExprQuot (stx : Syntax) : Bool :=
   stx.isOfKind ``Parser.Term.exprQuot
 
+private def precheckedQuotKind : SyntaxNodeKind := `Lean.Parser.Term.precheckedQuot
+
+/-- Return `true` iff `stx` is a bare `` `(p) `` term quotation (`Lean.Parser.Term.quot`). -/
+abbrev isBareTermQuot : Syntax → Bool := Quotation.isBareTermQuot
+
+/--
+Promote a `Lean.Parser.Term.quot` node `` `(p) `` into `` `(expr[rel]| p) ``, preserving
+original `SourceInfo` on the outer span and body.
+-/
+def mkExprQuotFromTermQuot (quotStx : Syntax) (relStx? : Option Syntax := none) : Syntax :=
+  if quotStx.getNumArgs == 3 then
+    let lparen := quotStx[0]
+    let body := quotStx[1]
+    let rparen := quotStx[2]
+    let rel := relStx?.getD <|
+      mkNode ``Parser.Term.exprQuotRel #[mkNullNode, mkNullNode, mkNullNode]
+    mkNode ``Parser.Term.exprQuot
+      #[lparen, mkAtomFrom lparen "expr", rel, mkAtomFrom lparen "| ", body, rparen]
+  else
+    quotStx
+
 /--
 Collect all `?x` pattern variable identifiers occurring in an `` `(expr[rel]| p) `` quotation,
 stopping at `$`-pins and nested quotations, and rejecting repeated `?x`.
@@ -123,8 +144,11 @@ private def mergeExprQuotRel (modRelStx patRelStx : Syntax) : Syntax :=
 private def rewriteExprQuotsInPat (modRelStx : Syntax) (stx : Syntax) : Syntax :=
   if isExprQuot stx then
     stx.setArg 2 (mergeExprQuotRel modRelStx stx[2])
-  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isQuot ||
-      stx.isAntiquot || stx.isTokenAntiquot then
+  else if isBareTermQuot stx then
+    let emptyRel := mkNode ``Parser.Term.exprQuotRel #[mkNullNode, mkNullNode, mkNullNode]
+    mkExprQuotFromTermQuot stx (some (mergeExprQuotRel modRelStx emptyRel))
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then
     stx
   else
     match stx with
@@ -1206,8 +1230,8 @@ structure AltExprSlotSpec where
 /-- Return `true` iff pattern syntax `stx` contains an `` `(expr[rel]| ...) `` quotation. -/
 def hasExprQuotInPat (stx : Syntax) : Bool :=
   if isExprQuot stx then true
-  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isQuot ||
-      stx.isAntiquot || stx.isTokenAntiquot then false
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then false
   else
     match stx with
     | .node _ k args =>
@@ -1227,12 +1251,167 @@ decreasing_by
 def hasExprQuotInAltViews (altViews : Array (MatchAltView k)) : Bool :=
   altViews.any (·.patterns.any hasExprQuotInPat)
 
+/-- Return `true` iff pattern syntax `stx` contains a bare `` `(p) `` quotation. -/
+def hasBareTermQuotInPat (stx : Syntax) : Bool :=
+  if isBareTermQuot stx then true
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      isExprQuot stx || stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then false
+  else
+    match stx with
+    | .node _ k args =>
+      if k == ``Parser.Term.typeAscription then
+        if h : 1 < args.size then hasBareTermQuotInPat args[1] else false
+      else
+        args.any hasBareTermQuotInPat
+    | _ => false
+termination_by sizeOf stx
+decreasing_by
+  · simp_wf
+    have := Array.sizeOf_lt_of_mem (Array.getElem_mem h)
+    omega
+  · decreasing_tactic
+
+/-- Return `true` iff any pattern in `altViews` contains a bare `` `(p) `` quotation. -/
+def hasBareTermQuotInAltViews (altViews : Array (MatchAltView k)) : Bool :=
+  altViews.any (·.patterns.any hasBareTermQuotInPat)
+
+/-- Unconditionally promote all bare `` `(p) `` nodes in pattern syntax `stx` to `exprQuot`. -/
+def promoteAllBareTermQuotsInPat (stx : Syntax) : Syntax :=
+  if isBareTermQuot stx then
+    mkExprQuotFromTermQuot stx
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      isExprQuot stx || stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then
+    stx
+  else
+    match stx with
+    | .node i k args =>
+      if k == ``Parser.Term.typeAscription then
+        if h : 1 < args.size then
+          .node i k (args.set 1 (promoteAllBareTermQuotsInPat args[1]))
+        else
+          .node i k args
+      else
+        .node i k (args.map promoteAllBareTermQuotsInPat)
+    | _ => stx
+termination_by sizeOf stx
+decreasing_by
+  · simp_wf
+    have := Array.sizeOf_lt_of_mem (Array.getElem_mem h)
+    omega
+  · decreasing_tactic
+
+/--
+Unwrap outer parentheses, type ascriptions, and `id@pat` wrappers around a top-level bare
+`` `(p) `` pattern.
+-/
+def unwrapTopBareTermQuot? : Syntax → Option Syntax
+  | stx@(.node _ k args) =>
+    if isBareTermQuot stx then
+      some stx
+    else if k == ``Parser.Term.paren || k == ``Parser.Term.typeAscription then
+      if h : 1 < args.size then unwrapTopBareTermQuot? args[1] else none
+    else if k == ``Parser.Term.namedPattern then
+      if h : 3 < args.size then unwrapTopBareTermQuot? args[3] else none
+    else
+      none
+  | _ => none
+termination_by stx => sizeOf stx
+decreasing_by
+  · simp_wf; have := Array.sizeOf_lt_of_mem (Array.getElem_mem h); omega
+  · simp_wf; have := Array.sizeOf_lt_of_mem (Array.getElem_mem h); omega
+
+abbrev DiscrQuotTypeClass := Quotation.QuotDiscrTypeClass
+
+abbrev classifyTermTypeSilent (term : Term) : TermElabM DiscrQuotTypeClass :=
+  Quotation.classifyDiscrTypeSilent term
+
+private def replaceBareTermQuotsInPat (stx : Syntax) :
+    StateRefT (Array Name) TermElabM Syntax := do
+  if isBareTermQuot stx then
+    let probeName ← mkFreshUserName `__bare_quot_probe
+    modify (·.push probeName)
+    return mkNode ``Parser.Term.syntheticHole #[mkAtomFrom stx "?", mkIdentFrom stx probeName]
+  else if isExprQuot stx then
+    return mkNode ``Parser.Term.hole #[mkAtomFrom stx "_"]
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then
+    return stx
+  else
+    match stx with
+    | .node i k args =>
+      if k == ``Parser.Term.typeAscription then
+        if h : 1 < args.size then
+          let inner ← replaceBareTermQuotsInPat args[1]
+          return .node i k (args.set 1 inner)
+        else
+          return .node i k args
+      else
+        let mut newArgs := Array.emptyWithCapacity args.size
+        for a in args do
+          newArgs := newArgs.push (← replaceBareTermQuotsInPat a)
+        return .node i k newArgs
+    | _ => return stx
+termination_by sizeOf stx
+decreasing_by
+  · simp_wf
+    have := Array.sizeOf_lt_of_mem (Array.getElem_mem h)
+    omega
+  · decreasing_tactic
+
+/-- Replace every bare `` `(p) `` in `alt.patterns` with a fresh synthetic-hole probe for
+expected-type inference during bare-quotation promotion. -/
+def replaceBareTermQuotsInAltView (alt : MatchAltView k) :
+    TermElabM (MatchAltView k × Array Name) := do
+  let (pats, names) ← (alt.patterns.mapM replaceBareTermQuotsInPat).run #[]
+  return ({ alt with patterns := pats }, names)
+
+private def applyBareTermQuotProbesInPat (isExprMask : Array Bool) (stx : Syntax) :
+    StateM Nat Syntax := do
+  if isBareTermQuot stx then
+    let idx ← get
+    set (idx + 1)
+    if isExprMask.getD idx false then
+      return mkExprQuotFromTermQuot stx
+    else
+      return stx
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      isExprQuot stx || stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then
+    return stx
+  else
+    match stx with
+    | .node i k args =>
+      if k == ``Parser.Term.typeAscription then
+        if h : 1 < args.size then
+          let inner ← applyBareTermQuotProbesInPat isExprMask args[1]
+          return .node i k (args.set 1 inner)
+        else
+          return .node i k args
+      else
+        let mut newArgs := Array.emptyWithCapacity args.size
+        for a in args do
+          newArgs := newArgs.push (← applyBareTermQuotProbesInPat isExprMask a)
+        return .node i k newArgs
+    | _ => return stx
+termination_by sizeOf stx
+decreasing_by
+  · simp_wf
+    have := Array.sizeOf_lt_of_mem (Array.getElem_mem h)
+    omega
+  · decreasing_tactic
+
+/-- Promote each bare `` `(p) `` slot in `alt.patterns` whose corresponding `isExprMask` entry is
+`true`. -/
+def applyBareTermQuotProbesToAltView (isExprMask : Array Bool) (alt : MatchAltView k) :
+    MatchAltView k :=
+  let pats := (alt.patterns.mapM (applyBareTermQuotProbesInPat isExprMask)).run' 0
+  { alt with patterns := pats }
+
 private def collectExprQuotBinderNames (stx : Syntax) : StateRefT (Array Name) TermElabM Unit := do
   if isExprQuot stx then
     let vs ← collectExprQuotPatternVars stx
     modify (· ++ vs.map (·.getId))
-  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isQuot ||
-      stx.isAntiquot || stx.isTokenAntiquot then
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then
     return
   else
     match stx with
@@ -1257,15 +1436,32 @@ def getExprQuotBinderNamesInPats (pats : Array Syntax) : TermElabM (Array Name) 
   let (_, res) ← (pats.forM collectExprQuotBinderNames).run #[]
   return res
 
-/-- Reject `match h : e` on any discriminant column whose patterns contain an `expr` quotation. -/
+private def isTopLevelExprQuotPat : Syntax → Bool
+  | stx@(.node _ k args) =>
+    if isExprQuot stx then true
+    else if k == ``Parser.Term.paren || k == ``Parser.Term.typeAscription then
+      if h : 1 < args.size then isTopLevelExprQuotPat args[1] else false
+    else if k == ``Parser.Term.namedPattern then
+      if h : 3 < args.size then isTopLevelExprQuotPat args[3] else false
+    else false
+  | _ => false
+termination_by stx => sizeOf stx
+decreasing_by
+  · simp_wf; have := Array.sizeOf_lt_of_mem (Array.getElem_mem h); omega
+  · simp_wf; have := Array.sizeOf_lt_of_mem (Array.getElem_mem h); omega
+
+/--
+Reject `match h : e` when any pattern in that column is a top-level `expr` quotation (outer
+constructor patterns such as `some `(p)` or `` `(p) :: rest `` remain allowed).
+-/
 def checkNoEqProofOnQuotDiscrs (discrH?s : Array (Option Syntax))
     (altViews : Array (MatchAltView k)) : TermElabM Unit := do
   for h : colIdx in *...discrH?s.size do
     if let some hStx := discrH?s[colIdx] then
-      if altViews.any fun alt => alt.patterns[colIdx]?.any hasExprQuotInPat then
+      if altViews.any fun alt => alt.patterns[colIdx]?.any isTopLevelExprQuotPat then
         throwErrorAt hStx
-          "`{hStx}:` equality proof is not supported on a discriminant matched with `expr` \
-           quotations (the `Expr` values may only be related, not equal)"
+          "`{hStx}:` cannot prove meta-level `Expr` equality for a top-level quotation \
+           pattern; use `mkEqRefl` for an object-level kernel equality proof"
 
 private def extractPatExprQuots (altIdx colIdx : Nat) (stx : Syntax) :
     StateRefT (Array AltExprSlotSpec) TermElabM Syntax := do
@@ -1274,8 +1470,8 @@ private def extractPatExprQuots (altIdx colIdx : Nat) (stx : Syntax) :
     let phId := mkIdentFrom stx (← mkFreshUserName <| Name.mkSimple s!"__eq_{altIdx}_{slotIdx}")
     modify (·.push { placeholderId := phId, exprQuotStx := stx, colIdx })
     return mkNode ``Parser.Term.exprQuotPatSlot #[phId, stx]
-  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isQuot ||
-      stx.isAntiquot || stx.isTokenAntiquot then
+  else if stx.isOfKind ``Parser.Term.inaccessible || stx.isOfKind precheckedQuotKind ||
+      stx.isQuot || stx.isAntiquot || stx.isTokenAntiquot then
     return stx
   else
     match stx with
@@ -2391,7 +2587,7 @@ private def bindDiscrsAndDispatch (discrs : Array Expr) (discrHNames : Array (Op
     (idx : Nat) (curDiscrs : Array Expr) : TermElabM Expr := do
   if h : idx < discrs.size then
     let d := discrs[idx]
-    if !isDep && !d.isFVar then
+    if !isDep && (discrHNames.getD idx none).isNone && !d.isFVar then
       let dTy ← inferType d
       withLetDecl (← mkFreshUserName `__discr) dTy d (nondep := false)
           (kind := .implDetail) fun dv => do
@@ -2946,7 +3142,7 @@ private def unwrapPatSyntaxParens : Syntax → Syntax
     if k == ``Parser.Term.paren || k == ``Parser.Term.typeAscription then
       if h : 1 < args.size then unwrapPatSyntaxParens args[1] else stx
     else if k == ``Parser.Term.namedPattern then
-      if h : 2 < args.size then unwrapPatSyntaxParens args[2] else stx
+      if h : 3 < args.size then unwrapPatSyntaxParens args[3] else stx
     else stx
   | stx => stx
 termination_by stx => sizeOf stx
@@ -2994,7 +3190,7 @@ def checkSyntaxHoleInExprMatchPatterns (discrs : Array Expr)
         if let some inner := extractNonExprQuot? alt.patterns[colIdx] then
           Quotation.warnNamedSyntaxHolesInQuot inner.getQuotContent
           throwErrorAt inner "syntax quotation pattern on an `Expr` discriminant; \
-            use `` `(expr| ...) ``"
+            use `` `(...) `` or `` `(expr| ...) ``"
 
 private def unwrapExprQuotStx : Syntax → Syntax
   | stx@(.node _ k args) =>

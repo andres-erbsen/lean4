@@ -31,16 +31,16 @@ section A1WildcardUnderBinders
 
 private def matchImpBody (e : Expr) : MetaM (Option (Expr × Bool)) :=
   match e with
-  | `(expr| ∀ x, ?P x → _)     => return some (P, false)
-  | `(expr| ∀ (x : Nat), _)    => return some (mkConst ``Nat, true)
+  | `(∀ x, ?P x → _)     => return some (P, false)
+  | `(∀ (x : Nat), _)    => return some (mkConst ``Nat, true)
   | _                          => return none
 
 private def matchAllUnderWildcards (e : Expr) : MetaM Bool := do
   let r1 ← match e with
-    | `(expr| ∀ x, ?P x → _ = _) => let _ := P; pure true
+    | `(∀ x, ?P x → _ = _) => let _ := P; pure true
     | _ => pure false
   let r2 ← match e with
-    | `(expr| ∀ x : Nat, x > 0 → ∃ y : Nat, _) => pure true
+    | `(∀ x : Nat, x > 0 → ∃ y : Nat, _) => pure true
     | _ => pure false
   return r1 || r2
 
@@ -74,7 +74,7 @@ run_meta do
     withLocalDeclD `h (mkApp pFun x) fun h => do
       mkForallFVars #[x, h] (← mkAppM ``Eq #[h, h])
   let rDep ← match qDep with
-    | `(expr| ∀ x, ?P x → _) => let _ := P; pure true
+    | `(∀ x, ?P x → _) => let _ := P; pure true
     | _ => pure false
   assertTrue "A1: dependent `∀ x (h : P x), ...` still rejected by `→ _`" (!rDep)
 
@@ -92,34 +92,34 @@ section A2NoMacroPreExpansion
 
 private def matchIfLt (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | `(expr| if (?x : Nat) < ?y then $x else $y) => return some (x, y)
+  | `(if (?x : Nat) < ?y then $x else $y) => return some (x, y)
   | _ => return none
 
 private def matchIfInConstructs (e : Expr) : MetaM (Array Expr) := do
   let mut out := #[]
   -- 1. `if let`
-  if let `(expr| if ?c then ?a else ?b) := e then
+  if let `(if ?c then ?a else ?b) := e then
     out := out ++ #[c, a, b]
   -- 2. `fun |`
   let f : Expr → MetaM (Option Expr) := fun
-    | `(expr| if ?c then _ else _) => pure (some c)
+    | `(if ?c then _ else _) => pure (some c)
     | _ => pure none
   if let some c ← f e then
     out := out.push c
   -- 3. `match` multi-arm
   let c2 ← match e with
-    | `(expr| Nat.succ ?n) => pure n
-    | `(expr| if ?c then _ else _) => pure c
+    | `(Nat.succ ?n) => pure n
+    | `(if ?c then _ else _) => pure c
     | _ => pure (mkConst ``Nat.zero)
   out := out.push c2
   -- 4. `for case` over `subterms`
-  for case (`(expr| if ?c then _ else _), _) in subterms e do
+  for case (`(if ?c then _ else _), _) in subterms e do
     out := out.push c
   return out
 
 private def matchDite (e : Expr) : MetaM (Option (Expr × Expr × Expr)) :=
   match e with
-  | `(expr| if h : ?c then ?a h else ?b) => return some (c, a, b)
+  | `(if h : ?c then ?a h else ?b) => return some (c, a, b)
   | _ => return none
 
 #guard_msgs in
@@ -164,7 +164,7 @@ error: `..` after a pattern variable or pin is not supported; for a constant hea
 #guard_msgs (substring := true) in
 def badPatHoleEllipsis (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| ?g ..) => let _ := g; return true
+  | `(?g ..) => let _ := g; return true
   | _              => return false
 
 /--
@@ -173,7 +173,7 @@ error: `..` after a pattern variable or pin is not supported; for a constant hea
 #guard_msgs (substring := true) in
 def badPatPinEllipsis (g e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| $g ..) => return true
+  | `($g ..) => return true
   | _              => return false
 
 /--
@@ -193,7 +193,7 @@ def badTmplHoleEllipsis : MetaM Expr :=
 #guard_msgs in
 def okStaticConsEllipsis (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| List.cons ..) => return true
+  | `(List.cons ..) => return true
   | _                     => return false
 
 end A5aEllipsisOnHoleHead
@@ -484,7 +484,7 @@ run_meta do
     withLocalDeclD `s subTy fun s => do
       let projExpr := Expr.proj ``Subtype 0 s
       let matched ← match projExpr with
-        | `(expr| Subtype.val ?x) => let _ := x; pure true
+        | `(Subtype.val ?x) => let _ := x; pure true
         | _                       => pure false
       assertTrue "B1: structural Subtype.val does not match .proj" (!matched)
 
@@ -507,7 +507,7 @@ error: pattern variable `?T` occurs only in the type of another pattern variable
 #guard_msgs (whitespace := lax, substring := true) in
 def badStructTypeOnlyVar (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| (?x : ?T)) => let _ := (x, T); return true
+  | `((?x : ?T)) => let _ := (x, T); return true
   | _ => return false
 
 /--
@@ -516,7 +516,7 @@ error: pattern variable `?A` occurs only in the type of another pattern variable
 #guard_msgs (whitespace := lax, substring := true) in
 def badStructTypeOnlyApp (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| (?f : ?A → ?B) ?x) => let _ := (f, A, B, x); return true
+  | `((?f : ?A → ?B) ?x) => let _ := (f, A, B, x); return true
   | _ => return false
 
 #guard_msgs in
@@ -537,7 +537,7 @@ warning: type ascription `(?x : Nat)` is not checked at runtime under `/structur
 #guard_msgs (substring := true) in
 def warnUncheckedScalar (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| (?x : Nat)) => let _ := x; return true
+  | `((?x : Nat)) => let _ := x; return true
   | _ => return false
 
 /--
@@ -546,15 +546,15 @@ warning: type ascription `(?Q1 : Prop)` is not checked at runtime under `/struct
 #guard_msgs (substring := true) in
 def warnUncheckedArrow (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| (?Q1 : Prop) → (?Q2 : Prop)) => let _ := (Q1, Q2); return true
+  | `((?Q1 : Prop) → (?Q2 : Prop)) => let _ := (Q1, Q2); return true
   | _ => return false
 
 -- Constrained occurrences (`Nat` enforced via `HAdd.hAdd` args or wild `: _`) do NOT warn.
 #guard_msgs in
 def noWarnConstrainedTypes (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| (?x : Nat) + ?y) => let _ := (x, y); return true
-  | `(expr| (?x : _) = ?y)   => let _ := (x, y); return true
+  | `((?x : Nat) + ?y) => let _ := (x, y); return true
+  | `((?x : _) = ?y)   => let _ := (x, y); return true
   | _ => return false
 
 end B2AndA5cTypeAscriptions
@@ -589,7 +589,7 @@ run_meta do
   -- 3 binders `[x, z, w]`) with valid live `LocalContext` and rebuilds closed well-typed `Expr`.
   let mut binderCounts : Array Nat := #[]
   let mut rebuilt? : Option Expr := none
-  for case (`(expr| ?a + 0), ctx) in subtermsUnderBinders root do
+  for case (`(?a + 0), ctx) in subtermsUnderBinders root do
     let aTy ← inferType a
     assertTrue "Q7: inferType a = Nat" (← isDefEq aTy (mkConst ``Nat))
     binderCounts := binderCounts.push ctx.binders.size
@@ -663,7 +663,7 @@ set_option linter.unusedVariables true
 #guard_msgs in
 def noUnusedVarOnObjectBinder (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| ∀ x : Nat, _) => return true
+  | `(∀ x : Nat, _) => return true
   | _                     => return false
 
 /--
@@ -674,7 +674,7 @@ Hint: The binding can be removed (if unused) or named `_` (if used implicitly).
 #guard_msgs (substring := true) in
 def warnUnusedPatCapture (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| (?x : Nat) + 1) => return 0
+  | `((?x : Nat) + 1) => return 0
   | _                       => return 1
 
 /--
@@ -745,7 +745,7 @@ run_meta do
     let rawSub := mkApp6 (mkConst ``HSub.hSub [u0, u1, u2]) natTy natTy natTy instSub a b
     -- 1. Single-arm `/structural` with assigned `Level.mvar`s in scrutinee:
     let singleHit ← match rawSub with
-      | `(expr| (?x : Nat) - ?y) => pure (x == a && y == b)
+      | `((?x : Nat) - ?y) => pure (x == a && y == b)
       | _                        => pure false
     assertTrue "assigned Level.mvar single-arm structural" singleHit
     -- 2. Multi-arm `DiscrTree`-indexed `/structural +inst` with assigned `Level.mvar`s
@@ -773,7 +773,7 @@ run_meta do
     let type0 := mkSort (.succ .zero)
     let rawPoly := mkApp2 (mkConst ``polyConst [lv1]) type0 a
     let polyDirect ← match rawPoly with
-      | `(expr| polyConst Type ?x) => pure (x == a)
+      | `(polyConst Type ?x) => pure (x == a)
       | _                          => pure false
     assertTrue "assigned Level.mvar in polyConst" polyDirect
     let polyWrapExpr := mkApp3 (mkConst ``polyWrap [lv1]) type0 natTy a
@@ -789,7 +789,7 @@ run_meta do
     let rhsClean ← mkAppM ``HSub.hSub #[b, a]
     let eqRaw ← mkEq lhsRaw rhsClean
     let selfPinHit ← match eqRaw with
-      | `(expr| (?x : Nat) = $x) => pure (x == lhsRaw)
+      | `((?x : Nat) = $x) => pure (x == lhsRaw)
       | _                        => pure false
     assertTrue "nonlinear self-pin with assigned nested Expr.mvar & Level.mvar" selfPinHit
 

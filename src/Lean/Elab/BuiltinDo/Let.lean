@@ -11,6 +11,7 @@ public import Lean.Elab.Do.Basic
 meta import Lean.Parser.Do
 import Lean.Elab.BuiltinDo.Basic
 import Lean.Elab.Do.PatternVar
+import Lean.Elab.ExprQuot
 
 public section
 
@@ -242,6 +243,7 @@ private def getLetConfigAndCheckMut (letConfigStx : TSyntax ``Parser.Term.letCon
   let config ← getLetConfigAndCheckMut cfg mutTk?
   checkLetConfigInDo config
   let letOrReassign := LetOrReassign.let mutTk? false
+  let pattern ← promoteBarePatForRhs pattern rhs
   let vars ← getPatternVarsEx pattern
   letOrReassign.checkMutVars vars
   let mut body ← body?.getDM `(doSeqIndent|pure PUnit.unit)

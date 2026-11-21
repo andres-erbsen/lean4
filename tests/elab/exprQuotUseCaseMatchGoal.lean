@@ -35,7 +35,7 @@ example (p q r : Prop) : q → p → (p → q → r) → (q → r) → r := by
 /-- `split_ands`: replace every hypothesis `h : a ∧ b` by its two projections. -/
 elab "split_ands" : tactic => withMainContext do
   let mut goal ← getMainGoal
-  for case (h, `(expr| ?a ∧ ?b)) in (← localHypTypes) do
+  for case (h, `(?a ∧ ?b)) in (← localHypTypes) do
     -- Term templates: splices are checked against `a ∧ b` and instances are resolved statically.
     let (_, g) ← goal.note `left (← `(expr| And.left ($h : $a ∧ $b))) a
     let (_, g) ← g.note `right (← `(expr| And.right ($h : $a ∧ $b))) b
@@ -49,7 +49,7 @@ example (p q r : Prop) (h : p ∧ q) (h' : q ∧ r) : r ∧ p := by
 /-- `clear_refl`: drop trivial equations `h : a = a` (the second `$a` is a non-linear pin). -/
 elab "clear_refl" : tactic => withMainContext do
   let mut goal ← getMainGoal
-  for case (h, `(expr| (?a : _) = $a)) in (← localHypTypes) do
+  for case (h, `((?a : _) = $a)) in (← localHypTypes) do
     goal ← goal.clear h.fvarId!
   replaceMainGoal [goal]
 
@@ -64,7 +64,7 @@ example (n : Nat) : n = n → n + 1 = n + 1 → n = 0 → n = 0 := by
 elab "inst_forall " t:term : tactic => withMainContext do
   let t ← Term.elabTerm t (mkConst ``Nat)
   let mut goal ← getMainGoal
-  for case (h, `(expr| ∀ x : Nat, ?P x)) in (← localHypTypes) do
+  for case (h, `(∀ x : Nat, ?P x)) in (← localHypTypes) do
     -- `?P` is captured as a lambda `fun x => ...`; `headBeta` instantiates it with `t`.
     goal := (← goal.note `inst (mkApp h t) (mkApp P t).headBeta).2
   replaceMainGoal [goal]
@@ -76,7 +76,7 @@ example (f : Nat → Nat) (hf : ∀ x : Nat, f x = x + 1) : f 2 = 3 := by
 /-- `close_by_let`: close `⊢ a = b` when `b` matches `a` after unfolding one `let` local. -/
 elab "close_by_let" : tactic => withMainContext do
   let goal ← getMainGoal
-  let `(expr| (?a : _) = ?b) ← getMainTarget | throwError "close_by_let: not an equation"
+  let `((?a : _) = ?b) ← getMainTarget | throwError "close_by_let: not an equation"
   for case (x, _, some _) in (← localHypDecls (reverse := true)) do
     -- `[+$x]` lets the structural matcher unfold exactly the local definition `x`.
     if let `(expr/structural[+$x]| $a) := b then

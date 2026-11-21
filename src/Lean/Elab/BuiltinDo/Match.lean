@@ -59,11 +59,23 @@ private def expandToTermMatch : DoElab := fun stx dec => do
       {indentExpr doBlockResultType}\n is different to the result type of the `match` \
       {indentExpr dec.resultType}"
   dec.withDuplicableCont info fun dec => do
+  let discrTerms : Array Term := discrs.getElems.map fun d => ⟨d.raw[1]⟩
   let rec loop i (alts : Array (TSyntax ``matchAlt)) := do
     if h : i < alts.size then
       match alts[i] with
       | `(matchAltExpr| | $patterns,* => $seq) =>
-        let vars ← getPatternsVarsEx patterns
+        let patElems := patterns.getElems
+        let patArgs ←
+          if dependent then
+            patElems.mapIdxM fun colIdx p => do
+              if hD : colIdx < discrTerms.size then
+                let depFVars ← Term.Quotation.collectOtherDiscrFVars discrTerms colIdx
+                promoteBarePatForRhs p discrTerms[colIdx] depFVars
+              else
+                pure p
+          else
+            pure patElems
+        let vars ← getPatternsVarsEx patArgs
         checkMutVarsForShadowing vars
         let elabRhs (type? : Option Expr) : DoElabM Expr := do
           let (true, some type) := (dependent, type?) | elabDoSeq ⟨seq⟩ dec
@@ -244,12 +256,17 @@ private def elabDoMatchCore (discrs : TSyntaxArray ``matchDiscr) (alts : Array D
   let (discrs, matchType, altsRes) ← mapTermElabM Term.commitIfDidNotPostpone do
     let discrs ← Term.withSynthesize <| elabDiscrs discrs
     let alts ← Term.expandMacrosInPatterns alts
+    let matchType ← mkDepMatchMotive discrs (← mkMonadApp (← read).doBlockResultType)
+    let alts ← Term.promoteBareExprQuots discrs.size matchType alts
+    let mut patVars : Array Ident := #[]
+    for alt in alts do
+      patVars := patVars ++ (← getPatternsVarsEx (alt.patterns.map (⟨·⟩)))
+    checkMutVarsForShadowing patVars
     Term.ExprQuot.checkSyntaxHoleInExprMatchPatterns (discrs.map (·.expr)) alts
     if Term.ExprQuot.hasExprQuotInAltViews alts then
       Term.ExprQuot.checkNoEqProofOnQuotDiscrs (discrs.map (·.h?)) alts
       let origAltsPats := alts.map fun alt => alt.patterns.map some
       let (ordAlts, altSpecs) ← Term.ExprQuot.extractAltExprQuots alts
-      let matchType ← mkDepMatchMotive discrs (← mkMonadApp (← read).doBlockResultType)
       let exprAlts ← (Array.range ordAlts.size).mapM fun idx =>
         elabExprMatchAlt discrs matchType (ordAlts.getD idx default) (origAltsPats.getD idx #[])
           (altSpecs.getD idx #[]) dec
@@ -260,7 +277,7 @@ private def elabDoMatchCore (discrs : TSyntaxArray ``matchDiscr) (alts : Array D
         Term.ExprQuot.instantiateExprMatchAltMVars alt newLHS
       return (discrs, matchType, DoMatchAltResult.exprQuot exprAlts)
     else
-      let (matchType, lhss, rhss) ← elabMatchAlts discrs alts dec
+      let (lhss, rhss) ← Array.unzip <$> alts.mapM (elabMatchAlt discrs matchType · dec)
       Term.synthesizeSyntheticMVars
       let lhss ← Term.instantiateAltLHSs lhss
       return (discrs, matchType, DoMatchAltResult.ordinary lhss rhss)
@@ -279,6 +296,50 @@ def isSyntaxMatch (alts : Array (TSyntax ``matchAlt)) : Bool :=
       | `($_@$pat) => pat.raw.isQuot
       | pat        => pat.raw.isQuot)
     | _ => false)
+
+private def unwrapDoQuotPat : Syntax → Option Syntax
+  | `($_@$pat) => if pat.raw.isQuot then some pat.raw else none
+  | pat        => if pat.isQuot then some pat else none
+
+private def shouldUseSyntaxMatch (discrs : TSyntaxArray ``matchDiscr)
+    (alts : Array (TSyntax ``matchAlt)) : DoElabM Bool := do
+  unless isSyntaxMatch alts do
+    return false
+  let discrTerms : Array Term := discrs.map fun d => ⟨d.raw[1]⟩
+  let mut bareCols : Array Bool := Array.replicate discrTerms.size false
+  let mut anyBare := false
+  for alt in alts do
+    if let `(matchAltExpr| | $pats,* => $_) := alt then
+      let patElems := pats.getElems
+      for h : colIdx in *...patElems.size do
+        if hD : colIdx < discrTerms.size then
+          if let some q := unwrapDoQuotPat patElems[colIdx].raw then
+            if Term.Quotation.shouldCheckBareQuotDiscr discrTerms[colIdx] q then
+              bareCols := bareCols.setIfInBounds colIdx true
+              anyBare := true
+  unless anyBare do
+    return true
+  let mut sawMVar := false
+  for h : colIdx in *...discrTerms.size do
+    if bareCols.getD colIdx false then
+      let depFVars ← Term.Quotation.collectOtherDiscrFVars discrTerms colIdx
+      match ← Term.Quotation.classifyDiscrTypeSilent discrTerms[colIdx] depFVars with
+      | .isExpr => return false
+      | .isMVar =>
+        let couldBeExpr ← alts.anyM fun alt => do
+          if let `(matchAltExpr| | $pats,* => $_) := alt then
+            let patElems := pats.getElems
+            if _hP : colIdx < patElems.size then
+              if let some q := unwrapDoQuotPat patElems[colIdx].raw then
+                let extra := Term.Quotation.collectArmPlainIdentPats patElems colIdx
+                return ← Term.Quotation.couldBeBareExprQuotOnMVar q extra
+          return false
+        if couldBeExpr then
+          sawMVar := true
+      | .other => pure ()
+  if sawMVar then
+    Term.tryPostpone
+  return true
 
 def getAltsPatternVars (alts : TSyntaxArray ``matchAlt) : TermElabM (Array Ident) := do
   let mut vars := #[]
@@ -312,7 +373,7 @@ def getAltsPatternVars (alts : TSyntaxArray ``matchAlt) : TermElabM (Array Ident
         return ← Term.withMacroExpansion stx newStx <| elabDoSeq ⟨newStx⟩ dec
 
   -- Expand syntax_match to a term match. This is OK because it is never dependent.
-  if isSyntaxMatch alts then
+  if ← shouldUseSyntaxMatch discrs alts then
     return ← expandToTermMatch stx dec
 
   -- If the user has explicitly requested a dependent match, we expand to a term match as well.
@@ -324,5 +385,4 @@ def getAltsPatternVars (alts : TSyntaxArray ``matchAlt) : TermElabM (Array Ident
   if let some stx := gen? then
     throwErrorAt stx "The `do` elaborator does not support dependent matches and generalization by default. Try `(dependent := true)`."
 
-  checkMutVarsForShadowing (← getAltsPatternVars alts)
   elabDoMatchCore discrs (alts.filterMap (Term.getMatchAlt ``doSeq)) dec

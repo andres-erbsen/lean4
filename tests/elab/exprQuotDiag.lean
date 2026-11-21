@@ -242,9 +242,9 @@ opaque customF : Nat → Nat
 
 private def traceStructMatch (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| (?x : Nat) + (?y : Nat)) => let _ := (x, y); return 1
-  | `(expr| (?a : Nat) * $a)         => let _ := a; return 2
-  | `(expr| customF ?n)              => let _ := n; return 3
+  | `((?x : Nat) + (?y : Nat)) => let _ := (x, y); return 1
+  | `((?a : Nat) * $a)         => let _ := a; return 2
+  | `(customF ?n)              => let _ := n; return 3
   | _                                => return 0
 
 /--
@@ -363,7 +363,7 @@ section DiagRepeatedVar
 #guard_msgs in
 def diagRepeatedVar (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| ?x + ?x) => let _ := x; return true
+  | `(?x + ?x) => let _ := x; return true
   | _ => return false
 
 end DiagRepeatedVar
@@ -374,7 +374,7 @@ section DiagOutOfScopePinPat
 #guard_msgs in
 def diagOutOfScopePinPat (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| $missingVar + (?y : Nat)) => let _ := y; return true
+  | `($missingVar + (?y : Nat)) => let _ := y; return true
   | _ => return false
 
 end DiagOutOfScopePinPat
@@ -402,7 +402,7 @@ Note: This linter can be disabled with `set_option linter.exprQuot.numeralDefaul
 set_option linter.exprQuot.numeralDefaulting true in
 def lintNumeralDefaultRight (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| ?x + 1) => let _ := x; return true
+  | `(?x + 1) => let _ := x; return true
   | _ => return false
 
 end LintNumeralDefaultRight
@@ -419,7 +419,7 @@ Note: This linter can be disabled with `set_option linter.exprQuot.numeralDefaul
 set_option linter.exprQuot.numeralDefaulting true in
 def lintNumeralDefaultLeft (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| 1 + ?x) => let _ := x; return true
+  | `(1 + ?x) => let _ := x; return true
   | _ => return false
 
 end LintNumeralDefaultLeft
@@ -436,7 +436,7 @@ Note: This linter can be disabled with `set_option linter.exprQuot.numeralDefaul
 set_option linter.exprQuot.numeralDefaulting true in
 def lintNumeralDefaultBare (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| 1) => return true
+  | `(1) => return true
   | _ => return false
 
 end LintNumeralDefaultBare
@@ -448,10 +448,10 @@ set_option linter.exprQuot.numeralDefaulting true in
 #guard_msgs in
 def noLintNumeralAnnotated (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| (?x : Nat) + 1) => let _ := x; return 1
-  | `(expr| (1 : Nat) + ?x) => let _ := x; return 2
-  | `(expr| Nat.succ 1)     => return 3
-  | `(expr| (1 : Int) + ?x) => let _ := x; return 4
+  | `((?x : Nat) + 1) => let _ := x; return 1
+  | `((1 : Nat) + ?x) => let _ := x; return 2
+  | `(Nat.succ 1)     => return 3
+  | `((1 : Int) + ?x) => let _ := x; return 4
   | _                       => return 0
 
 end NoLintNumeralAnnotated
@@ -466,13 +466,14 @@ did you mean `` `(expr| ...) ``?
 
 Note: This linter can be disabled with `set_option linter.exprQuot.syntaxHole false`
 ---
-error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) ``
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
 -/
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.syntaxHole true in
 def lintSyntaxHoleMatchExpr (e : Expr) : Nat :=
   match e with
-  | `(?x + 1) => 1
+  | `(term| ?x + 1) => 1
   | _ => 0
 
 end LintSyntaxHoleMatchExpr
@@ -485,12 +486,13 @@ did you mean `` `(expr| ...) ``?
 
 Note: This linter can be disabled with `set_option linter.exprQuot.syntaxHole false`
 ---
-error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) ``
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
 -/
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.syntaxHole true in
 def lintSyntaxHoleIfLetExpr (e : Expr) : Nat :=
-  if let `(?x + 1) := e then 1 else 0
+  if let `(term| ?x + 1) := e then 1 else 0
 
 end LintSyntaxHoleIfLetExpr
 
@@ -502,13 +504,14 @@ did you mean `` `(expr| ...) ``?
 
 Note: This linter can be disabled with `set_option linter.exprQuot.syntaxHole false`
 ---
-error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) ``
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
 -/
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.syntaxHole true in
 def lintSyntaxHoleDoMatchExpr (e : Expr) : MetaM Nat := do
   match e with
-  | `(?x + 1) => return 1
+  | `(term| ?x + 1) => return 1
   | _ => return 0
 
 end LintSyntaxHoleDoMatchExpr
@@ -521,12 +524,13 @@ did you mean `` `(expr| ...) ``?
 
 Note: This linter can be disabled with `set_option linter.exprQuot.syntaxHole false`
 ---
-error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) ``
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
 -/
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.syntaxHole true in
 def lintSyntaxHoleDoLetElseExpr (e : Expr) : MetaM Nat := do
-  let `(?x + 1) := e | return 0
+  let `(term| ?x + 1) := e | return 0
   return 1
 
 end LintSyntaxHoleDoLetElseExpr
@@ -539,12 +543,13 @@ did you mean `` `(expr| ...) ``?
 
 Note: This linter can be disabled with `set_option linter.exprQuot.syntaxHole false`
 ---
-error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) ``
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
 -/
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.syntaxHole true in
 def lintSyntaxHoleFunPipeExpr : Expr → Nat
-  | `(?x) => 1
+  | `(term| ?x) => 1
   | _ => 0
 
 end LintSyntaxHoleFunPipeExpr
@@ -624,11 +629,14 @@ end NoLintMatchSyntaxNamed
 section NoLintMatchExprAnonHole
 
 set_option linter.exprQuot.syntaxHole true in
-/-- error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) `` -/
-#guard_msgs in
+/--
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
+-/
+#guard_msgs (whitespace := lax) in
 def noLintMatchExprAnonHole (e : Expr) : Nat :=
   match e with
-  | `(?_) => 1
+  | `(term| ?_) => 1
   | _ => 0
 
 end NoLintMatchExprAnonHole

@@ -444,7 +444,8 @@ private partial def getHeadInfo (alt : Alt) : TermElabM HeadInfo :=
             else mkNullNode contents
           -- We use `no_error_if_unused%` in auxiliary `match`-syntax to avoid spurious error messages,
           -- the outer `match` is checking for unused alternatives
-          `(match ($(discrs).mapM fun
+          let elemId ← withFreshMacroScope `(__discr)
+          `(match ($(discrs).mapM fun ($elemId : Syntax) => match $elemId:ident with
                 | `($contents) => no_error_if_unused% some $tuple
                 | _            => no_error_if_unused% none) with
               | some $resId => $yes
@@ -675,16 +676,40 @@ private def unwrapStxMatchQuot : Syntax → Option Syntax
   | pat        => if pat.isQuot then some pat else none
 
 private def checkExprTypeSilent (discr : Term) : TermElabM Bool := do
-  let savedMsgs ← Core.getMessageLog
-  try
-    withoutModifyingElabMetaStateWithInfo <| withoutErrToSorry do
-      let d ← Term.elabTerm discr none
-      let ty ← withReducible <| Meta.whnf (← instantiateMVars (← Meta.inferType d))
-      return ty.isConstOf ``Lean.Expr
-  catch _ =>
+  return (← classifyDiscrTypeSilent discr) == .isExpr
+
+private def shouldDelegateBareQuotToExprMatch (discrs : TSyntaxArray `term)
+    (patss : Array (TSyntaxArray `term)) : TermElabM Bool := do
+  let mut bareCols : Array Bool := Array.replicate discrs.size false
+  let mut anyBare := false
+  for pats in patss do
+    for h : colIdx in *...pats.size do
+      if hD : colIdx < discrs.size then
+        if let some quot := unwrapStxMatchQuot pats[colIdx] then
+          if shouldCheckBareQuotDiscr discrs[colIdx] quot then
+            bareCols := bareCols.setIfInBounds colIdx true
+            anyBare := true
+  unless anyBare do
     return false
-  finally
-    Core.setMessageLog savedMsgs
+  let mut sawMVar := false
+  for h : colIdx in *...discrs.size do
+    if bareCols.getD colIdx false then
+      let depFVars ← collectOtherDiscrFVars discrs colIdx
+      match ← classifyDiscrTypeSilent discrs[colIdx] depFVars with
+      | .isExpr => return true
+      | .isMVar =>
+        let couldBeExpr ← patss.anyM fun pats => do
+          if hP : colIdx < pats.size then
+            if let some quot := unwrapStxMatchQuot pats[colIdx].raw then
+              let extra := collectArmPlainIdentPats pats colIdx
+              return ← couldBeBareExprQuotOnMVar quot extra
+          return false
+        if couldBeExpr then
+          sawMVar := true
+      | .other => pure ()
+  if sawMVar then
+    Term.tryPostpone
+  return false
 
 private def checkSyntaxHoleInStxMatch (discrs : TSyntaxArray `term)
     (patss : Array (TSyntaxArray `term)) : TermElabM Unit := do
@@ -703,7 +728,7 @@ private def checkSyntaxHoleInStxMatch (discrs : TSyntaxArray `term)
         if isExpr then
           warnNamedSyntaxHolesInQuot quot.getQuotContent
           throwErrorAt quot "syntax quotation pattern on an `Expr` discriminant; \
-            use `` `(expr| ...) ``"
+            use `` `(...) `` or `` `(expr| ...) ``"
 
 def match_syntax.expand (stx : Syntax) : TermElabM Syntax := do
   match stx with
@@ -737,6 +762,8 @@ private def hasNewErrorSince (savedNumMsgs : Nat) (log : MessageLog) : Bool :=
   match stx with
   | `(match $[$discrs:term],* with $[|%$_ $[$patss],* => $_]*) =>
     if !patss.any (·.any (fun pat => (unwrapStxMatchQuot pat).isSome)) then
+      throwUnsupportedSyntax
+    if ← shouldDelegateBareQuotToExprMatch discrs patss then
       throwUnsupportedSyntax
     let savedState ← Term.saveState
     let log ← Core.getMessageLog

@@ -456,7 +456,8 @@ private partial def expandPatternMacros (stx : Syntax) : MacroM Syntax :=
   withRef stx do
     match stx with
     | .node info kind args =>
-      if kind != ``Lean.Parser.Term.byTactic && kind != ``Lean.Parser.Term.exprQuot then
+      if kind != ``Lean.Parser.Term.byTactic && kind != ``Lean.Parser.Term.exprQuot &&
+          kind != `Lean.Parser.Term.quot && kind != `Lean.Parser.Term.precheckedQuot then
         match (← expandMacro? stx) with
         | some stxNew => expandPatternMacros stxNew
         | none =>

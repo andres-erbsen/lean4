@@ -40,7 +40,7 @@ run_meta do
   Meta.check swapped
   let mut foundSub := false
   for (sub, ctx) in subterms sum do
-    if let `(expr| 2) := sub then
+    if let `(2) := sub then
       let repl := ctx.fill (mkNatLit 9)
       Meta.check repl
       foundSub := true

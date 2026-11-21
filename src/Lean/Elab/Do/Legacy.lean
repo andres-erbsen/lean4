@@ -670,24 +670,61 @@ def getLetIdDeclVars (letIdDecl : Syntax) : Array Var :=
   -- def letIdDecl := leading_parser letIdLhs >> " := " >> termParser
   getLetIdVars letIdDecl[0]
 
+private def promoteTopBarePatIfExpr (pattern : Syntax) (rhs : Syntax) : TermElabM Syntax := do
+  let some q := ExprQuot.unwrapTopBareTermQuot? pattern | return pattern
+  unless Quotation.shouldCheckBareQuotDiscr ⟨rhs⟩ q do
+    return pattern
+  if (← Quotation.classifyDiscrTypeSilent ⟨rhs⟩) == .isExpr then
+    return ExprQuot.promoteAllBareTermQuotsInPat pattern
+  return pattern
+
 -- support both regular and syntax match
 def getPatternVarsEx (pattern : Syntax) : TermElabM (Array Var) :=
   if ExprQuot.hasExprQuotInPat pattern then
     getPatternVars pattern
   else
-    Quotation.getPatternVars pattern <|>
-    getPatternVars pattern
+    try
+      Quotation.getPatternVars pattern
+    catch
+      | ex@(.internal _) => throw ex
+      | _ =>
+        if (ExprQuot.unwrapTopBareTermQuot? pattern).isNone &&
+            ExprQuot.hasBareTermQuotInPat pattern then
+          try
+            getPatternVars (ExprQuot.promoteAllBareTermQuotsInPat pattern)
+          catch
+            | ex@(.internal _) => throw ex
+            | _ => getPatternVars pattern
+        else
+          getPatternVars pattern
 
 def getPatternsVarsEx (patterns : Array Syntax) : TermElabM (Array Var) :=
   if patterns.any ExprQuot.hasExprQuotInPat then
     getPatternsVars patterns
   else
-    Quotation.getPatternsVars patterns <|>
-    getPatternsVars patterns
+    try
+      Quotation.getPatternsVars patterns
+    catch
+      | ex@(.internal _) => throw ex
+      | _ =>
+        if patterns.any (fun p =>
+            (ExprQuot.unwrapTopBareTermQuot? p).isNone &&
+            ExprQuot.hasBareTermQuotInPat p) then
+          try
+            getPatternsVars (patterns.map ExprQuot.promoteAllBareTermQuotsInPat)
+          catch
+            | ex@(.internal _) => throw ex
+            | _ => getPatternsVars patterns
+        else
+          getPatternsVars patterns
 
 def getLetPatDeclVars (letPatDecl : Syntax) : TermElabM (Array Var) := do
   -- def letPatDecl := leading_parser termParser >> pushNone >> optType >> " := " >> termParser
   let pattern := letPatDecl[0]
+  let optType := letPatDecl[2]
+  let rhs := letPatDecl[4]
+  let rhsTyped ← if optType.isNone then pure rhs else `(($rhs : $(optType[0][1])))
+  let pattern ← promoteTopBarePatIfExpr pattern rhsTyped
   getPatternVarsEx pattern
 
 def getLetEqnsDeclVars (letEqnsDecl : Syntax) : Array Var :=
@@ -1499,6 +1536,7 @@ mutual
     -- "let " >> optional "mut " >> letConfig >> termParser >> " := " >> termParser >> (checkColGt >> " | " >> doSeq) >> optional doSeq
     let pattern := doLetElse[3]
     let val     := doLetElse[5]
+    let pattern ← promoteTopBarePatIfExpr pattern val
     let elseSeq := doLetElse[7]
     let bodySeq := doLetElse[8][0]
     let contSeq ← if isMutableLet doLetElse then
@@ -1670,9 +1708,15 @@ mutual
     let discrs    := doMatch[4]
     let matchAlts := doMatch[6][0].getArgs -- Array of `doMatchAlt`
     let matchAlts ← matchAlts.foldlM (init := #[]) fun result matchAlt => return result ++ expandMatchAlt matchAlt
-    let alts ←  matchAlts.mapM fun matchAlt => do
+    let discrTerms := discrs.getSepArgs.map (·[1])
+    let alts ← matchAlts.mapM fun matchAlt => do
       let patterns := matchAlt[1][0]
-      let vars ← getPatternsVarsEx patterns.getSepArgs
+      let patArgs ← patterns.getSepArgs.mapIdxM fun idx p => do
+        if h : idx < discrTerms.size then
+          promoteTopBarePatIfExpr p discrTerms[idx]
+        else
+          pure p
+      let vars ← getPatternsVarsEx patArgs
       withRef patterns <| checkNotShadowingMutable vars
       let rhs  := matchAlt[3]
       let rhs ← doSeqToCode (getDoSeqElems rhs)

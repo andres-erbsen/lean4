@@ -1,6 +1,7 @@
 # Quasi-Quoted `Expr` Patterns (`expr` Quotations)
 
-`expr` quotations provide native syntax `` `(expr[rel]| p) `` for matching, destructuring,
+`expr` quotations provide native syntax `` `(expr[rel]| p) ``—and bare `` `(p) `` in
+`Expr`-typed pattern matches and `match (modulo := ...)`—for matching, destructuring,
 inspecting, and building Lean `Expr` values directly inside Lean expressions and tactics.
 
 For internal module layout and architectural design rationale, see
@@ -15,9 +16,14 @@ An `expr` quotation has the form `` `(expr[/engine] [[±items]] [±flags]| body)
   `expr`. Because `expr` is a non-reserved keyword parsed after `` `( ``, identifiers named
   `expr` (e.g. `` `(expr + 1) ``) and dynamic syntax quotations such as `` `(exprFoo| ...) ``
   remain unambiguous.
+- **Bare `` `(p) `` in `Expr` pattern positions**:
+  - In `Expr`-typed pattern positions (`match`, `fun |`, `if let`, `let ... |`, `do match`,
+    `for case`, including nested constructors such as `some `(?a + ?b)` and
+    `match (modulo := ...)`), bare `` `(p) `` promotes automatically to `` `(expr| p) ``
+    with default engine `/structural` (explicit `` `(term| ...) `` and `` `(tactic| ...) ``
+    stay strictly syntax-only).
 - **Pattern vs. term default relation**:
-  - In **pattern positions** (`match`, `fun |`, `if let`, `let ... |`, `do match`, `for case`),
-    the default engine is `/structural`.
+  - In **pattern positions**, the default engine is `/structural`.
   - In **term positions** (evaluating `` `(expr| t) `` in `MetaM Expr` or `[MonadSym m]` to
     build an `Expr`), the default engine is `/defeq` (used to check `$e` splice types).
 
@@ -33,7 +39,7 @@ open Lean Meta
 
 def classifyTarget (e? : Option Expr) : MetaM String := do
   match e? with
-  | some `(expr| (?a : Nat) + $a) => return s!"self-sum: {← ppExpr a}"
+  | some `((?a : Nat) + $a) => return s!"self-sum: {← ppExpr a}"
   | some (.lam n ty body _) => return s!"lambda binder: {n} : {← ppExpr ty}, body={body.dbgToString}"
   | some _ => return "other expr"
   | none => return "missing"
@@ -50,7 +56,7 @@ def myId (n : Nat) : Nat := n
 def matchWithModulo (e : Expr) : MetaM String :=
   match (modulo := defeq) e with
   | `(expr/structural| myId Nat.zero) => return "exact myId Nat.zero"
-  | `(expr| myId 0)                   => return "defeq zero"
+  | `(myId 0)                   => return "defeq zero"
   | _                                 => return "other"
 ```
 
@@ -62,9 +68,26 @@ def matchWithModulo (e : Expr) : MetaM String :=
 - **`match (modulo := rel)`** (term-mode and `do`-mode): sets a default relation for all
   quotation patterns in the `match`. A per-pattern `/engine` replaces `(modulo := rel)` completely,
   while per-pattern `[items]` and `±flags` extend it.
-- **Why `match h : e` is rejected**: equality proof binders (`match h : e` or `let (eq := h)`)
-  are rejected on any discriminant column matched with `expr` quotations because matching only
-  guarantees satisfaction of the chosen relation `rel`, not propositional equality (`Eq`).
+- **Equality proofs (`match h : d`) vs. object-level `mkEqRefl`**:
+  - Top-level `match h : e with | `(p) => ...` (and `let (eq := h) `(p) := e`) is rejected—just
+    like `match_syntax` and `match_expr`—because `e` and `p` satisfy the matching relation `rel`
+    rather than literal `Lean.Expr` AST equality. Because every supported relation is a
+    subrelation of kernel `isDefEq`, `mkEqRefl e` directly produces an object-level proof term
+    `Expr` of `$e = $(p)`.
+  - When quotation slots appear inside outer constructors (`match h : xs with | `(p) :: rest => ...`
+    or `match h : opt with | some `(p) => ...`), `h :` **is** supported and binds the outer
+    constructor equality in `Prop` (for invariants and `decreasing_by simp [h]` termination):
+    ```lean
+    def countAdds : List Expr → MetaM Nat
+      | xs => match h : xs with
+        | `((?a : Nat) + _) :: rest =>
+          have : rest.length < xs.length := by simp [h]
+          return 1 + (← countAdds rest)
+        | _ :: rest =>
+          have : rest.length < xs.length := by simp [h]
+          countAdds rest
+        | [] => return 0
+    ```
 - **No macro pre-expansion**: macros inside `` `(expr| ...) `` patterns (such as
   `if c then t else e`) are not expanded before quotation elaboration, keeping user `?c` holes and
   `_` wildcards intact.
@@ -101,7 +124,7 @@ When `x₁ … xₙ` are distinct pattern-bound variables, `?P x₁ … xₙ` ca
 ```lean
 def inspectBinderBody (e : Expr) : MetaM (Option Expr) := do
   match e with
-  | `(expr| ∀ x : Nat, ?P x) =>
+  | `(∀ x : Nat, ?P x) =>
     -- Reconstruct `body[42/x]` uniformly whether or not `P` was eta-peeled:
     return some (P.beta #[mkNatLit 42])
   | _ => return none
@@ -109,7 +132,7 @@ def inspectBinderBody (e : Expr) : MetaM (Option Expr) := do
 def matchEtaPeeledPin (e : Expr) : MetaM (Option Expr) :=
   -- Trailing `x` on `f x` eta-peels `P := f`, so `$P 0` matches without `+beta`:
   match e with
-  | `(expr| (∀ x : Nat, ?P x) ∧ ($P 0)) => return some P
+  | `((∀ x : Nat, ?P x) ∧ ($P 0)) => return some P
   | _ => return none
 ```
 
@@ -330,7 +353,8 @@ def buildExamples (a b p q P : Expr) : MetaM (Expr × Expr × Expr × Expr × Ex
 ### Exact Public Signatures (`Lean.Meta` and `Lean.Elab.Tactic`)
 
 ```lean
--- Local context inspection (`src/Lean/Meta/ExprPattern.lean`):
+-- Local context inspection (`src/Lean/Meta/ExprPatternCore.lean`;
+-- `import Lean.Meta.ExprPatternCore` avoids `SymM` when `/sym` is not needed):
 def localHypTypes (reverse : Bool := false) (except : List Expr := []) :
     MetaM (Array (Expr × Expr))
 
@@ -338,7 +362,7 @@ def localHypDecls (reverse : Bool := false) (except : List Expr := []) :
     MetaM (Array (Expr × Expr × Option Expr))
 -- Note: `val?` is `some v` only for dependent `let` declarations (`have` yields `none`).
 
--- Backtracking hypothesis search (`ExprPattern.lean` and `FirstHyp.lean`):
+-- Backtracking hypothesis search (`ExprPatternCore.lean` and `FirstHyp.lean`):
 def _root_.Lean.MVarId.firstHyp? {ε : Type} [Monad m] [MonadControlT MetaM m]
     [MonadLiftT MetaM m] [MonadBacktrack s m] [MonadExcept ε m]
     (mvarId : MVarId) (f : Expr → Expr → m α)
@@ -355,7 +379,7 @@ def Elab.Tactic.firstHyp? (f : Expr → Expr → TacticM α)
 def Elab.Tactic.firstHyp (f : Expr → Expr → TacticM α)
     (reverse : Bool := true) (except : List Expr := []) : TacticM α
 
--- Zipper contexts & subterm/discriminant streams (`ExprPattern.lean`):
+-- Zipper contexts & subterm/discriminant streams (`ExprPatternCore.lean`):
 structure ExprContext
 def ExprContext.binders (ctx : ExprContext) : Array Expr
 def ExprContext.fill (ctx : ExprContext) (replacement : Expr) : Expr
@@ -384,7 +408,7 @@ Key behavior notes:
   `casesOn`) discriminants. Compiled `match` expressions often include generalized index
   discriminants, so filter with a typed pattern such as `` `(expr/reducible| (?d : Bool)) ``.
   Because `if c then t else e` (`ite`/`dite`) and `bif` (`cond`) are ordinary definitions rather
-  than `MatcherApp` nodes, match them via `subterms` with `` `(expr| if ?c then _ else _) ``.
+  than `MatcherApp` nodes, match them via `subterms` with `` `(if ?c then _ else _) ``.
 
 ### Conceptual Map & Side-by-Side Idioms (Rocq `Ltac` -> Lean 4)
 
@@ -393,7 +417,7 @@ building inside `match goal` and `constr:(...)`, Lean separates each role cleanl
 
 | Rocq `Ltac` Idiom | Lean 4 Counterpart | Key Difference |
 |---|---|---|
-| `lazymatch t with \| ...` | `match e with \| `(expr[rel]\| p) => ...` | Native control flow; mixes with `Option`/`Prod` |
+| `lazymatch t with \| ...` | `match e with \| `(p) => ...` / `` `(expr[rel]\| p) `` | Native control flow; mixes with `Option`/`Prod` |
 | `?x` (first) ... `?x` (later) | `?x` (linear binder) ... `$x` (self-pin) | Repeating `?x` is a compile error; pins use `$x`/`$e` |
 | `match goal with \| H : P \|- G` | `firstHyp` / `firstHyp?` + `localHypDecls` | Explicit `except` & `reverse := true` backtracking |
 | `context C[pat]` | `subterms` / `subtermsUnderBinders` / `matchDiscriminants` | Lazy `(sub, ctx)` streams + `ExprContext.fill` |
@@ -427,7 +451,7 @@ open Lean Meta Elab Tactic
 -- Contextual `change` via `subterms` + `ExprContext.fill`:
 elab "succ_to_add" : tactic => withMainContext do
   let goal ← getMainGoal
-  for case (`(expr| Nat.succ ?n), ctx) in subterms (← getMainTarget) do
+  for case (`(Nat.succ ?n), ctx) in subterms (← getMainTarget) do
     replaceMainGoal [← goal.replaceTargetDefEq (ctx.fill (← `(expr| ($n : Nat) + 1)))]
     return
   throwError "succ_to_add: no `Nat.succ` found"
@@ -435,7 +459,7 @@ elab "succ_to_add" : tactic => withMainContext do
 -- Binder-descending scan via `subtermsUnderBinders`:
 def findQuantifiedAddZero (hyps : Array (Expr × Expr)) : MetaM (Option (Expr × Expr)) := do
   for (h, ty) in hyps do
-    for case (`(expr| (?x : Nat) + 0), ctx) in subtermsUnderBinders ty do
+    for case (`((?x : Nat) + 0), ctx) in subtermsUnderBinders ty do
       if !ctx.binders.isEmpty then
         return some (h, ctx.fill x)
   return none
@@ -511,7 +535,7 @@ projection encoding hints):
 
 | Option | Default | Behavior |
 |---|---|---|
-| `linter.exprQuot.syntaxHole` | `true` | Warns on named `?x` inside ordinary syntax quotations in `Expr`-typed match patterns (also an error) or `Expr` / `m Expr` term positions; ignores `?_` and `Syntax`/`TSyntax`. |
+| `linter.exprQuot.syntaxHole` | `true` | Warns on named `?x` inside explicit syntax quotations (e.g. `` `(term\| ?x) ``) in `Expr`-typed match patterns (also an error) or bare `` `(?x) `` in `Expr` / `m Expr` term positions; ignores `?_` and `Syntax`/`TSyntax`. |
 | `linter.exprQuot.uncheckedType` | `true` | Warns when an explicit `(?x : T)` type ascription in a `/structural` pattern sits solely in type-unconstrained positions. |
 | `linter.exprQuot.collapsedPattern` | `true` | Warns when a non-variable pattern reduces under its own relation to a bare pattern variable (such as `Subtype.mk ?v _ \|>.val` under `/reducible`). |
 | `linter.exprQuot.numeralDefaulting` | `true` | Warns when a pattern numeral relies on `OfNat` defaulting to `Nat`, suggesting `(n : Nat)`. |

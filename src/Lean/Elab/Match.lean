@@ -155,7 +155,8 @@ where
 def expandMacrosInPatterns (matchAlts : Array (MatchAltView k)) :
     TermElabM (Array (MatchAltView k)) := do
   let shouldExpand (kind : SyntaxNodeKind) : Bool :=
-    kind != ``Parser.Term.byTactic && kind != ``Parser.Term.exprQuot
+    kind != ``Parser.Term.byTactic && kind != ``Parser.Term.exprQuot &&
+    kind != `Lean.Parser.Term.quot && kind != `Lean.Parser.Term.precheckedQuot
   matchAlts.mapM fun matchAlt => do
     let patterns ← matchAlt.patterns.mapM (expandMacrosReportingDeprecated · shouldExpand)
     pure { matchAlt with patterns := patterns }
@@ -1179,6 +1180,78 @@ def instantiateAltLHSs (lhss : Array AltLHS) : TermElabM (List AltLHS) :=
             Term.throwMVarError m!"Invalid match expression: This pattern contains metavariables:{indentExpr (← p.toExpr)}"
     pure altLHS
 
+/--
+Probe bare `` `(p) `` patterns via expected-type elaboration and promote those at `Lean.Expr`
+positions to `Parser.Term.exprQuot`. Postpones when an unresolved metavariable type occurs on a
+bare-quotation slot.
+-/
+def promoteBareExprQuots {k : SyntaxNodeKinds} (numDiscrs : Nat) (matchType : Expr)
+    (altViews : Array (MatchAltView k)) : TermElabM (Array (MatchAltView k)) := do
+  unless ExprQuot.hasBareTermQuotInAltViews altViews do
+    return altViews
+  let mut anyMVar := false
+  let mut anyErr := false
+  let mut out := #[]
+  for alt in altViews do
+    if !alt.patterns.any ExprQuot.hasBareTermQuotInPat then
+      out := out.push alt
+    else
+      let (probedAlt, probeNames) ← ExprQuot.replaceBareTermQuotsInAltView alt
+      let savedMsgs ← Core.getMessageLog
+      let (probeClasses, altErr) ←
+        try
+          Core.resetMessageLog
+          withEnableInfoTree false <| withoutModifyingElabMetaStateWithInfo <| withoutErrToSorry do
+            let (patternVars, probedAlt') ← collectPatternVars probedAlt
+            let classes ← withPatternVars patternVars fun _ => do
+              withSynthesize <| withPatternElabConfig do
+                let mut curMatchType := matchType
+                for colIdx in *...min numDiscrs probedAlt'.patterns.size do
+                  curMatchType ← whnf curMatchType
+                  let Expr.forallE _ d b _ := curMatchType | break
+                  let patExpr ←
+                    try
+                      elabTermEnsuringType probedAlt'.patterns[colIdx]! d
+                    catch
+                      | ex@(.internal id _) =>
+                        if id == postponeExceptionId then throw ex
+                        mkFreshExprMVar (some d)
+                      | _ => mkFreshExprMVar (some d)
+                  curMatchType := b.instantiate1 patExpr
+              let mctx ← getMCtx
+              probeNames.mapM fun pName => show TermElabM ExprQuot.DiscrQuotTypeClass from do
+                match mctx.findUserName? pName with
+                | none => return .other
+                | some mvarId =>
+                  let ty ← whnf (← instantiateMVars (← mvarId.getType))
+                  if ty.isConstOf ``Lean.Expr then
+                    return .isExpr
+                  else if ← isMVarApp ty then
+                    return .isMVar
+                  else
+                    return .other
+            return (classes, (← Core.getMessageLog).hasErrors)
+        catch
+          | ex@(.internal id _) =>
+            if id == postponeExceptionId then throw ex
+            pure (Array.replicate probeNames.size Quotation.QuotDiscrTypeClass.other, true)
+          | _ =>
+            pure (Array.replicate probeNames.size Quotation.QuotDiscrTypeClass.other, true)
+        finally
+          Core.setMessageLog savedMsgs
+      if altErr then
+        anyErr := true
+      if probeClasses.any (· == .isMVar) && !altErr then
+        anyMVar := true
+      let isExprMask := probeClasses.map (· == .isExpr)
+      if isExprMask.any id then
+        out := out.push (ExprQuot.applyBareTermQuotProbesToAltView isExprMask alt)
+      else
+        out := out.push alt
+  if anyMVar && !anyErr then
+    Term.tryPostpone
+  return out
+
 private def elabExprMatchAltView (discrs : Array Discr) (alt : TermMatchAltView)
     (specs : Array ExprQuot.AltExprSlotSpec) (origPats : Array (Option Syntax))
     (matchType : Expr) (toClear : Array FVarId) :
@@ -1207,6 +1280,7 @@ private def elabMatchAux (generalizing? : Option Bool) (discrStxs : Array Syntax
   let (discrs, matchType, isDep, altRes) ← commitIfDidNotPostpone do
     let ⟨discrs, matchType, isDep, altViews⟩ ← elabMatchTypeAndDiscrs discrStxs matchOptMotive altViews expectedType
     let matchAlts ← expandMacrosInPatterns altViews
+    let matchAlts ← promoteBareExprQuots discrs.size matchType matchAlts
     ExprQuot.checkSyntaxHoleInExprMatchPatterns (discrs.map (·.expr)) matchAlts
     if ExprQuot.hasExprQuotInAltViews matchAlts then
       ExprQuot.checkNoEqProofOnQuotDiscrs (discrs.map (·.h?)) matchAlts

@@ -19,7 +19,7 @@ run_meta do
 
 private def firstHypCoreTac : TacticM Unit :=
   firstHyp fun hFVar ty => do
-    let `(expr| (?x : Nat) + 0 = $x) := ty | failure
+    let `((?x : Nat) + 0 = $x) := ty | failure
     (← getMainGoal).assign hFVar
     replaceMainGoal []
 

@@ -22,12 +22,12 @@ open Lean Meta Elab Tactic
 /-- One normalization step `e = e'` with its proof, or `none` if no rule applies at the root. -/
 def natStep? (e : Expr) : MetaM (Option (Expr × Expr)) := do
   match e with
-  | `(expr| (?x : Nat) + 0) => return some (x, ← `(expr| Nat.add_zero $x))
-  | `(expr| 0 + (?x : Nat)) => return some (x, ← `(expr| Nat.zero_add $x))
-  | `(expr| (?x : Nat) * 1) => return some (x, ← `(expr| Nat.mul_one $x))
-  | `(expr| 1 * (?x : Nat)) => return some (x, ← `(expr| Nat.one_mul $x))
-  | `(expr| (?x : Nat) * 0) => return some (mkNatLit 0, ← `(expr| Nat.mul_zero $x))
-  | `(expr| (?x : Nat) - $x) => return some (mkNatLit 0, ← `(expr| Nat.sub_self $x))
+  | `((?x : Nat) + 0) => return some (x, ← `(expr| Nat.add_zero $x))
+  | `(0 + (?x : Nat)) => return some (x, ← `(expr| Nat.zero_add $x))
+  | `((?x : Nat) * 1) => return some (x, ← `(expr| Nat.mul_one $x))
+  | `(1 * (?x : Nat)) => return some (x, ← `(expr| Nat.one_mul $x))
+  | `((?x : Nat) * 0) => return some (mkNatLit 0, ← `(expr| Nat.mul_zero $x))
+  | `((?x : Nat) - $x) => return some (mkNatLit 0, ← `(expr| Nat.sub_self $x))
   | _ => return none
 
 /-- `nat_norm`: rewrite with `natStep?` at the outermost matching subterm until none is left. -/
@@ -54,7 +54,7 @@ into the defeq `n + 1`.
 -/
 elab "succ_to_add" : tactic => withMainContext do
   let goal ← getMainGoal
-  for case (`(expr| Nat.succ ?n), ctx) in subtermsUnderBinders (← getMainTarget) do
+  for case (`(Nat.succ ?n), ctx) in subtermsUnderBinders (← getMainTarget) do
     replaceMainGoal [← goal.replaceTargetDefEq (ctx.fill (← `(expr| ($n : Nat) + 1)))]
     return
   throwError "succ_to_add: no `Nat.succ` found"
@@ -85,7 +85,7 @@ example (b : Bool) : (match b with | true => 2 | false => 1 + 1) = 2 := by
 /-- `and_skeleton`: refine `⊢ a ∧ b` with `And.intro ?l ?r`; the two holes become new goals. -/
 elab "and_skeleton" : tactic => withMainContext do
   let goal ← getMainGoal
-  let `(expr| ?a ∧ ?b) ← getMainTarget | throwError "and_skeleton: not a conjunction"
+  let `(?a ∧ ?b) ← getMainTarget | throwError "and_skeleton: not a conjunction"
   let pf ← `(expr| (And.intro ?l ?r : $a ∧ $b))
   goal.assign pf
   replaceMainGoal (← getMVarsNoDelayed pf).toList
@@ -105,13 +105,13 @@ def triple (n : Nat) : Nat := n + n + n
 /-- Which relations recognize `e` as "some number added to itself"? -/
 def selfAddUnder (e : Expr) : MetaM (List String) := do
   let mut hits := []
-  if let `(expr| (?x : Nat) + $x) := e then hits := hits ++ ["structural"]
+  if let `((?x : Nat) + $x) := e then hits := hits ++ ["structural"]
   if let `(expr +inst| (?x : Nat) + $x) := e then hits := hits ++ ["+inst"]
   if let `(expr +beta +zeta| (?x : Nat) + $x) := e then hits := hits ++ ["+beta +zeta"]
   if let `(expr/reducible| (?x : Nat) + $x) := e then hits := hits ++ ["reducible"]
   if let `(expr/structural[+triple]| (?x : Nat) + $x + ?_) := e then hits := hits ++ ["[+triple]"]
   match (modulo := defeq) e with
-  | `(expr| (?x : Nat) + $x + _) => hits := hits ++ ["defeq"]
+  | `((?x : Nat) + $x + _) => hits := hits ++ ["defeq"]
   | _ => pure ()
   return hits
 

@@ -257,7 +257,8 @@ builtin_initialize addBuiltinUnusedVariablesIgnoreFn (fun _ stack _ =>
       for (stx, pos) in stack do
         if stx.isAnyAntiquot then
           return false
-        if stx.isOfKind ``Lean.Parser.Term.exprQuot && pos == 4 then
+        if (stx.isOfKind ``Lean.Parser.Term.exprQuot && pos == 4) ||
+            (stx.isOfKind `Lean.Parser.Term.quot && stx.getNumArgs == 3 && pos == 1) then
           return true
       return false)
 

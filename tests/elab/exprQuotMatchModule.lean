@@ -17,7 +17,7 @@ private meta def check (cond : Bool) (msg : String) : MetaM Unit := do
 
 public meta def pubMetaMatch (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| ?a + ?b) => return a == b
+  | `(?a + ?b) => return a == b
   | _ => return false
 
 private meta def privMetaMatch (e : Expr) : MetaM (Option Expr) :=
@@ -26,7 +26,7 @@ private meta def privMetaMatch (e : Expr) : MetaM (Option Expr) :=
   | _ => return none
 
 @[expose] public def exposedNonMetaMatch (e : Expr) : MetaM Nat := do
-  if let `(expr| ?a * ?b) := e then
+  if let `(?a * ?b) := e then
     let _ := (a, b)
     return 1
   else
@@ -34,7 +34,7 @@ private meta def privMetaMatch (e : Expr) : MetaM (Option Expr) :=
 
 public def publicNonExposedMatch (e : Expr) : MetaM Nat :=
   match (modulo := reducible) e with
-  | `(expr| ?a + ?b) => let _ := (a, b); return 2
+  | `(?a + ?b) => let _ := (a, b); return 2
   | _ => return 3
 
 meta section
@@ -42,7 +42,7 @@ meta section
 def insideMetaSection (e : Expr) : MetaM Nat := do
   let mut count := 0
   match e with
-  | `(expr| ?a + ?b) =>
+  | `(?a + ?b) =>
     let _ := (a, b)
     count := count + 1
   | _ => count := count + 10

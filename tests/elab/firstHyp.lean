@@ -40,7 +40,7 @@ run_meta do
       let mvarId := (← mkFreshExprMVar (some (mkConst ``True))).mvarId!
       let parsePTag := fun _ ty => do
         match ty with
-        | `(expr| pTag ?n) =>
+        | `(pTag ?n) =>
           let some k ← getNatValue? n | throwError "not nat"
           return k
         | _ => throwError "no match"
@@ -49,14 +49,14 @@ run_meta do
       let revVisited ← IO.mkRef #[]
       let noneHit : Option Unit ← mvarId.firstHyp? fun _ ty => do
         match ty with
-        | `(expr| pTag ?n) =>
+        | `(pTag ?n) =>
           if let some k ← getNatValue? n then revVisited.modify (·.push k)
           throwError "reject"
         | _ => throwError "no match"
       let fwdVisited ← IO.mkRef #[]
       let _ : Option Unit ← mvarId.firstHyp? (reverse := false) fun _ ty => do
         match ty with
-        | `(expr| pTag ?n) =>
+        | `(pTag ?n) =>
           if let some k ← getNatValue? n then fwdVisited.modify (·.push k)
           throwError "reject"
         | _ => throwError "no match"
@@ -79,7 +79,7 @@ run_meta do
       let mvarId := (← mkFreshExprMVar (some (mkConst ``True))).mvarId!
       mvarId.firstHyp? (except := [h3, mkMData .empty h1]) fun _ ty => do
         match ty with
-        | `(expr| pTag ?n) =>
+        | `(pTag ?n) =>
           let some k ← getNatValue? n | throwError "not nat"
           return k
         | _ => throwError "no match"
@@ -99,7 +99,7 @@ run_meta do
       let mvarId := (← mkFreshExprMVar (some (mkConst ``True))).mvarId!
       let excRes ← (mvarId.firstHyp? (m := ExceptT String MetaM) fun _ ty =>
         match ty with
-        | `(expr| pTag 2) => return 22
+        | `(pTag 2) => return 22
         | _               => throwThe Exception (.error .missing "skip")).run
       let excOk : Bool := match excRes with
         | .ok (some 22) => true
@@ -250,7 +250,7 @@ example : pTag 10 → pTag 20 → pTag 30 → True := by
       | _ => throwError "no"
     let dHit ← goal.firstHyp fun h ty =>
       match ty with
-      | `(expr| pTag 10) => return (h == mkFVar h1Decl.fvarId)
+      | `(pTag 10) => return (h == mkFVar h1Decl.fvarId)
       | _                => throwError "no"
     logInfo m!"({d?}, {dHit})"
   exact trivial

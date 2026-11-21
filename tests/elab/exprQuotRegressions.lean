@@ -23,7 +23,7 @@ opaque rTag : Nat → Nat → Nat
 
 private def matchWildcardArgs (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | `(expr| rTag _ _) => return some (e.appFn!.appArg!, e.appArg!)
+  | `(rTag _ _) => return some (e.appFn!.appArg!, e.appArg!)
   | _                 => return none
 
 /-- info: true -/
@@ -40,7 +40,7 @@ run_meta do
 run_meta do
   -- Non-named `_` wildcards in mixed named+wildcard pattern never force equality.
   let twoWildcard : Expr → MetaM Bool
-    | `(expr| rTag _ ?x) => let _ := x; return true
+    | `(rTag _ ?x) => let _ := x; return true
     | _                  => return false
   logInfo m!"{← twoWildcard (← `(expr| rTag 7 8))}"
 
@@ -52,7 +52,7 @@ opaque pTag : Nat → Prop
 
 private def collectMatchingHyps : MetaM (Array (Name × Expr)) := do
   let mut out := #[]
-  for case (_, `(expr| pTag ?a)) in (← localHypTypes) do
+  for case (_, `(pTag ?a)) in (← localHypTypes) do
     out := out.push (`hit, a)
   return out
 
@@ -72,7 +72,7 @@ run_meta do
     withLocalDeclD `_ (mkApp (mkConst ``pTag) (mkNatLit 20)) fun _ =>
     withLocalDeclD `H (mkApp (mkConst ``pTag) (mkNatLit 30)) fun _ => do
       let mut vals : Array Expr := #[]
-      for case (_, `(expr| pTag ?n)) in (← localHypTypes) do
+      for case (_, `(pTag ?n)) in (← localHypTypes) do
         vals := vals.push n
       return vals
   let expected := #[mkNatLit 10, mkNatLit 20, mkNatLit 30]
@@ -148,11 +148,11 @@ section DoCommitControlFlow
 
 -- Commit inside `do` `if let` / `let ... |` control flow without fallback leak.
 private def doCommitControlFlow (e : Expr) (trace : IO.Ref (Array String)) : MetaM Nat := do
-  if let `(expr| ?x + $x) := e then
+  if let `(?x + $x) := e then
     trace.modify (·.push "ifLet")
     let _ := x
     return 10
-  let `(expr| ?a + ?b) := e
+  let `(?a + ?b) := e
     | do
       trace.modify (·.push "elseLet")
       return 0
@@ -203,7 +203,7 @@ run_meta do
       let gCleared ← g.mvarId!.clear h1.fvarId!
       gCleared.withContext do
         let mut seen : Array Expr := #[]
-        for case (_, `(expr| qTag ?n)) in (← localHypTypes) do
+        for case (_, `(qTag ?n)) in (← localHypTypes) do
           seen := seen.push n
         let stillHasH2 := (← localHypDecls).any (·.1 == h2)
         return seen == #[mkNatLit 2] && stillHasH2
@@ -223,9 +223,9 @@ run_meta do
   let g2 ← mkFreshExprMVar target2
   let rewriteSub (g : Expr) : MetaM (Option Expr) := g.mvarId!.withContext do
     for (sub, ctx) in subterms (← g.mvarId!.getType) do
-      if let `(expr| (1 : Nat) + (2 : Nat)) := sub then
+      if let `((1 : Nat) + (2 : Nat)) := sub then
         return some (ctx.fill (← `(expr| (99 : Nat))))
-      if let `(expr| (4 : Nat) + (5 : Nat)) := sub then
+      if let `((4 : Nat) + (5 : Nat)) := sub then
         return some (ctx.fill (← `(expr| (88 : Nat))))
     return none
   let filled1 ← rewriteSub g1

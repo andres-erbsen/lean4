@@ -86,8 +86,8 @@ indexing: eligible (DiscrTree keys: [HAdd.hAdd, Nat, Nat, Nat, instHAdd, Nat, in
 /-- Two indexed arms: the trace shows which candidates the discrimination tree selected. -/
 def classify (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| (?a : Nat) * $a) => let _ := a; return 1
-  | `(expr| Nat.succ ?n) => let _ := n; return 2
+  | `((?a : Nat) * $a) => let _ := a; return 1
+  | `(Nat.succ ?n) => let _ := n; return 2
   | _ => return 0
 
 /--
@@ -110,7 +110,7 @@ run_meta withOptions (·.setBool `trace.Meta.Match.expr true) do
 /-- error: repeated pattern variable `?x`; use `$x` to pin -/
 #guard_msgs in
 def sameSummands? (e : Expr) : MetaM Bool := do
-  let `(expr| ?x + ?x) := e | return false
+  let `(?x + ?x) := e | return false
   return true
 
 /--
@@ -122,7 +122,7 @@ Note: This linter can be disabled with `set_option linter.exprQuot.numeralDefaul
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.numeralDefaulting true in
 def isAddZero (e : Expr) : MetaM Bool := do
-  let `(expr| _ + 0) := e | return false
+  let `(_ + 0) := e | return false
   return true
 
 /--
@@ -131,13 +131,14 @@ did you mean `` `(expr| ...) ``?
 
 Note: This linter can be disabled with `set_option linter.exprQuot.syntaxHole false`
 ---
-error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) ``
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
 -/
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.syntaxHole true in
 def forgotExprKeyword (e : Expr) : Nat :=
   match e with
-  | `(?x + 1) => 1
+  | `(term| ?x + 1) => 1
   | _ => 0
 
 /--
@@ -184,7 +185,7 @@ Note: This linter can be disabled with `set_option linter.exprQuot.uncheckedType
 set_option linter.exprQuot.uncheckedType true in
 def uncheckedBinderType (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| (?x : Nat)) => let _ := x; return true
+  | `((?x : Nat)) => let _ := x; return true
   | _ => return false
 
 #guard_msgs in

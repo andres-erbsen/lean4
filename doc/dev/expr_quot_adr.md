@@ -143,8 +143,11 @@ or emit bogus exhaustiveness/redundancy messages.
   continuations through `__do_jp` join points (`withFailJP`) without duplicating RHS code or
   emitting `sorryAx` on exhaustive matches (synthesizing `sorry` only for error recovery when
   `!isExhaustive`).
-- Reject `match h : e` (`checkNoEqProofOnQuotDiscrs`) on any column containing an `expr` quotation
-  because matched `Expr`s satisfy the chosen relation `rel` rather than propositional equality `Eq`.
+- Reject `match h : e` (`checkNoEqProofOnQuotDiscrs`) only on columns containing top-level
+  quotation patterns (`isTopLevelExprQuotPat`, matching `match_syntax`/`match_expr`), since matched
+  `Expr`s satisfy the chosen relation `rel` rather than literal AST equality in `Prop` (while
+  allowing `h :` on outer constructors wrapping quotation slots such as `some `(p)` and
+  `` `(p) :: rest ``, and documenting `mkEqRefl` for object-level `$e = $(p)` kernel proofs).
 
 **Alternatives Considered:**
 1. *Bespoke `match_expr_quot` / `match_goal` macro*: could not seamlessly mix ordinary inductive
@@ -157,9 +160,10 @@ or emit bogus exhaustiveness/redundancy messages.
 - Works uniformly across `match`, `fun |`, `if let`, `let ... |`, `do match`, and `for case`,
   producing real LCNF join points and accurate redundancy diagnostics (`match.ignoreUnusedAlts`
   compatible).
-- `match h : e` is disallowed on quotation-matched columns (though still permitted on non-quotation
-  columns of the same multi-column `match`). Dependent matches skip discriminant `let`-hoisting and
-  index grouping so dependent motives and `combineOrigEqs` remain type-correct.
+- `match h : e` is disallowed on top-level quotation patterns (while permitted on outer
+  constructors such as `List Expr`/`Option Expr` wrapping quotation slots, and on non-quotation
+  columns). Dependent matches skip discriminant `let`-hoisting (including `h :` columns) and index
+  grouping so dependent motives and `combineOrigEqs` remain type-correct.
 
 ---
 
@@ -263,7 +267,8 @@ matching breaks on non-canonical instances or `let`-bound terms.
     resolves closed pattern proofs in `O(1)` via `closedProofs[pe]?`.
   - `computePatLevelNodes` (`patLevelNodes` / `hasPatLevelFast` / `matchLevel`): avoids traversing
     closed subterms for pattern universe parameters while unifying repeated `levelParams`
-    consistently.
+    consistently; `matchLevel`, `unfoldConstStep?`, and `!isPat` `structGo` lazily call
+    `instantiateLevelMVars` / `resolveHeadMVar` (`resolveHeadMVarPure`) on assigned mvars.
 - Preserve `let` structure without unnecessary substitution:
   - `/structural +zeta` records looked-through bindings as `LetEntry` values and calls `rewrapLets`,
     wrapping captured subterms only in the dependent `let`s they reference.
@@ -476,9 +481,12 @@ quotations, or duplicate `InfoTree` entries.
     non-output universe levels) to classify abstracted metavariables into `.splice`, `.hole`,
     `.tc`, and `.infer`, rejecting under-determined holes/instances/universes statically via
     `reportTermBuildErrors`.
-  - At runtime (`ExprTemplate.instantiateResolved` and `instantiateSymCore`), splice checks,
-    implicit unification, and `resolveReadyTCs` (using `isTCGoalReady` -> `inspectClassGoalInputs?`)
-    run inside `withNewMCtxDepth` so caller metavariables stay untouched. Before exiting
+  - At runtime (`ExprTemplate.instantiateResolved` and `instantiateSymCore`),
+    `checkSpliceTypeWithPendingTCs` runs `trialDefEqWithDeferredTCs` (deferring only
+    `reachable` TCs in `expTy`, keeping `?h` holes at `baseDepth`, marking deferred TCs
+    `.syntheticOpaque`, and rolling back `MCtx` on mismatch) before `resolveReadyTCs` /
+    `resolveReadyTCsGo` (which skips `isAssignedOrDelayedAssigned` `.tc` MVars) inside
+    `withNewMCtxDepth` so caller metavariables stay untouched. Before exiting
     `withNewMCtxDepth`, `validateTempHolePlans` checks each `HolePlaceholder`'s instantiated type
     with `hasTempMVar` / `levelHasTempMVar`, passing `allowed := priorTmpHoles` (permitting
     telescoping holes while rejecting any unresolved inner-depth metavariable or level mvar). Only
@@ -486,10 +494,12 @@ quotations, or duplicate `InfoTree` entries.
     metavariables in the caller's `MCtx`, rewriting earlier hole references via `tmpHoleMap` and
     guarding against forward cycles with `hasAnyMVarInSet`.
 - **Zero-overhead scoped diagnostics**:
-  - `checkSyntaxHoleInExprMatchPatterns` (`src/Lean/Elab/ExprQuot.lean`, called from `Match.lean`
-    and `BuiltinDo/Match.lean`) pre-scans patterns purely syntactically via `extractNonExprQuot?`
-    (`unwrapPatSyntaxParens`), returning immediately with **0** `inferType`/`whnf` calls on
-    ordinary `match` expressions.
+  - Bare `` `(p) `` (`Parser.Term.quot`) promotes to `` `(expr| p) `` on `Expr`-typed
+    slots and inside `match (modulo := ...)`, while explicit `` `(term| ...) `` /
+    `` `(tactic| ...) `` stay syntax-only. `checkSyntaxHoleInExprMatchPatterns`
+    (`src/Lean/Elab/ExprQuot.lean`, called from `Match.lean` and `BuiltinDo/Match.lean`)
+    runs post-promotion via `extractNonExprQuot?` (`unwrapPatSyntaxParens`), returning
+    immediately with **0** `inferType`/`whnf` calls on ordinary `match` expressions.
   - `Quotation.elabStxQuot` (`src/Lean/Elab/Quotation.lean`) guards on
     `linter.exprQuot.syntaxHole` and `isExprOrMonadExpr expectedType?` before running
     `collectNamedSyntaxHoles` (`Quotation/Util.lean`, ignoring `?_`, antiquotations, nested
@@ -541,7 +551,7 @@ quotations, or duplicate `InfoTree` entries.
 
 **Context:**
 When a higher-order pattern hole `?P x₁ … xₙ` matches a body `wrapped` under binders `x₁, …, xₙ`,
-structural matching (`structAssign` in `src/Lean/Meta/ExprPattern.lean`) must abstract `args :=
+structural matching (`structAssign` in `src/Lean/Meta/ExprPatternCore.lean`) must abstract `args :=
 #[x₁, …, xₙ]` over `wrapped` to bind `P`. Calling unconditional `lamVal.eta` on the resulting
 lambda collapses not only the freshly abstracted `args` but also any inner user lambdas present
 inside `wrapped` (for example, matching `` `(expr| fun (x : Nat) => ?P x) `` on
@@ -617,7 +627,7 @@ open expressions with loose `.bvar`s would break `Expr.eqv`, `inferType`, and `E
 - Keep `Subterms` (`subterms`) and `MatchDiscriminants` (`matchDiscriminants`) pure/closed-only as
   originally specified (ADR-003).
 - Add a companion `SubtermsUnderBinders` stream (`subtermsUnderBinders e (dedup := true)
-  (includeAppPrefixes := false)`) in `src/Lean/Meta/ExprPattern.lean` whose `ForIn` instance runs
+  (includeAppPrefixes := false)`) in `src/Lean/Meta/ExprPatternCore.lean` whose `ForIn` instance runs
   under `[Monad m] [MonadControlT MetaM m] [MonadLiftT MetaM m]`.
 - When descending into `.lam`, `.forallE`, or `.letE` bodies, open the binder via
   `Meta.withLocalDecl` / `Meta.withLetDecl`, instantiate `.bvar 0` with the fresh `fvar`, and push
@@ -665,14 +675,14 @@ matches arbitrary expressions.
   - When `@S.field` fails against kernel `.proj S i` under `/structural`, emit an actionable
     `trace.Meta.Match.expr` hint (`projection function S.field vs kernel projection; add [S.field]`).
 - **Reject non-unfoldable `[items]` constants at compile time and runtime**:
-  - `ExprMatchRel.validateUnfoldableConst` (`src/Lean/Meta/ExprPattern.lean`), invoked from both
+  - `ExprMatchRel.validateUnfoldableConst` (`src/Lean/Meta/ExprPatternCore.lean`), invoked from both
     `elabExprMatchRel` (`src/Lean/Elab/ExprQuot.lean`) and `resolveStaticCore`, requires
     `ConstantInfo.defnInfo` (`hasValue`). Theorems, constructors, inductive types, recursors,
     axioms, opaque constants, and quotient primitives raise a clear error instead of becoming
     silent no-ops.
 - **Warn on collapsing patterns without altering runtime semantics**:
   - Implement `ExprPattern.collapsedNormalForm?` (`collapsedStructStep?` and `collapsedDefEqHead?`
-    in `ExprPattern.lean`) to detect when a non-variable pattern reduces under its own relation to a
+    in `ExprPatternCore.lean`) to detect when a non-variable pattern reduces under its own relation to a
     bare pattern variable or variable-headed application.
   - Emit a `linter.exprQuot.collapsedPattern` warning (default `true`) from
     `elabExprQuotPatternCore` and print `collapsed normal form: ...` in `#check_pattern`, while

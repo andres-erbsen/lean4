@@ -93,17 +93,17 @@ section BasicNonLinearAndWildcards
 
 def matchAddSplit (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | `(expr| ?a + ?b) => return some (a, b)
+  | `(?a + ?b) => return some (a, b)
   | _ => return none
 
 def matchSameAdd (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ?x + $x) => return some x
+  | `(?x + $x) => return some x
   | _ => return none
 
 def matchWithWildcards (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ?x + _ + ?_) => return some x
+  | `(?x + _ + ?_) => return some x
   | _ => return none
 
 #guard_msgs in
@@ -123,17 +123,17 @@ section FirstOrderAndHigherOrder
 
 def matchHigherOrder (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| fun x => ?P x) => return some P
+  | `(fun x => ?P x) => return some P
   | _ => return none
 
 def matchFirstOrderApp (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | `(expr| ?f ?a) => return some (f, a)
+  | `(?f ?a) => return some (f, a)
   | _ => return none
 
 def matchConstBinder (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| fun (_ : Nat) => ?c) => return some c
+  | `(fun (_ : Nat) => ?c) => return some c
   | _ => return none
 
 #guard_msgs in
@@ -155,7 +155,7 @@ section TypeAscriptionAndStuckTC
 
 def matchTypeAscribedProj (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| (?p : Nat × Nat).1) => return some p
+  | `((?p : Nat × Nat).1) => return some p
   | _ => return none
 
 def matchDefEqTypedBinder (e : Expr) : MetaM (Option Expr) :=
@@ -165,7 +165,7 @@ def matchDefEqTypedBinder (e : Expr) : MetaM (Option Expr) :=
 
 def matchStuckToStringImplicit (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| toString ?x) => return some x
+  | `(toString ?x) => return some x
   | _ => return none
 
 #guard_msgs in
@@ -192,7 +192,7 @@ def myDefId (n : Nat) : Nat := n
 
 def testRelations (e : Expr) : MetaM (Array String) := do
   let mut hits : Array String := #[]
-  if let `(expr| myAbbrevId ?x) := e then hits := hits.push s!"structural_abbrev:{x.isFVar}"
+  if let `(myAbbrevId ?x) := e then hits := hits.push s!"structural_abbrev:{x.isFVar}"
   if let `(expr/reducible| Nat.zero) := e then hits := hits.push "reducible_0"
   if let `(expr/structural| myDefId ?x) := e then
     let _ := x; hits := hits.push "structural_def"
@@ -311,12 +311,12 @@ inductive Wrap where
 
 def matchNested (w : Option (Wrap × List Expr)) : MetaM String :=
   match w with
-  | some (.pair `(expr| ?a + ?b) `(expr| $a * ?c), [`(expr| $b + $c)]) =>
+  | some (.pair `(?a + ?b) `($a * ?c), [`($b + $c)]) =>
     return s!"matched1:{a.dbgToString != ""}:{c.dbgToString != ""}"
-  | some (.single e@`(expr| ?a + ?b), _) =>
+  | some (.single e@`(?a + ?b), _) =>
     return s!"as:{e.isApp}:{a.isFVar}:{b.isFVar}"
-  | some (.pair `(expr| ?x + 0) `(expr| ?y), [])
-  | some (.pair `(expr| 0 + ?x) `(expr| ?y), []) =>
+  | some (.pair `(?x + 0) `(?y), [])
+  | some (.pair `(0 + ?x) `(?y), []) =>
     return s!"or:{x.dbgToString != ""}:{y.dbgToString != ""}"
   | _ => return "miss"
 
@@ -340,7 +340,7 @@ section CrossPatternPin
 
 def matchPairOrdPin (p : Expr × Expr) : MetaM Bool :=
   match p with
-  | (x, `(expr| $x + _)) => return true
+  | (x, `($x + _)) => return true
   | _ => return false
 
 #guard_msgs in
@@ -356,7 +356,7 @@ section GeneralizeShadow
 def matchGeneralizeShadow (a : Nat) (h : a = a) (e : Expr) : MetaM (Nat × Nat) :=
   let _ := h
   match e with
-  | `(expr| ?a + _) =>
+  | `(?a + _) =>
     let _ := a
     return (1, 0)
   | _ => return (0, a)
@@ -377,7 +377,7 @@ end GeneralizeShadow
 section TermIfLet
 
 def termIfLet (e : Expr) : MetaM (Option Expr) :=
-  if let `(expr| ?a + ?b) := e then
+  if let `(?a + ?b) := e then
     let _ := b
     pure (some a)
   else
@@ -396,7 +396,7 @@ section TermAndDoLetElse
 
 def termAndDoLetElse (e : Expr) : MetaM Nat := do
   let x ← if let `(expr| ?a + ?b) := e then let _ := b; pure a else pure (mkNatLit 0)
-  let `(expr| ?u * ?v) := x | return 99
+  let `(?u * ?v) := x | return 99
   let _ := (u, v)
   return 1
 
@@ -416,22 +416,22 @@ def doControlFlowTest (xs : List Expr) : MetaM (Nat × List Expr) := do
   let mut sum := 0
   let mut out : List Expr := []
   for x in xs do
-    if let `(expr| 0 + ?r) := x then
+    if let `(0 + ?r) := x then
       sum := sum + 10
       out := r :: out
       continue
-    else if let `(expr| ?a + ?b) := x then
+    else if let `(?a + ?b) := x then
       sum := sum + 1
       out := b :: a :: out
     else
       sum := sum + 100
       break
     match x with
-    | `(expr| ?p + $p) =>
+    | `(?p + $p) =>
       sum := sum + 5
       return (sum, out)
     | _ =>
-      let `(expr| ?u + _) := x | continue
+      let `(?u + _) := x | continue
       out := u :: out
   return (sum, out)
 
@@ -449,7 +449,7 @@ section MonadicDiscrInDo
 
 def monadicDiscrInDo (mk : MetaM Expr) : MetaM Nat := do
   match ← mk with
-  | `(expr| 1 + 1) => return 10
+  | `(1 + 1) => return 10
   | _ => return 20
 
 #guard_msgs in
@@ -465,7 +465,7 @@ end MonadicDiscrInDo
 section DoLetArrowElse
 
 def doLetArrowElse (mk : MetaM Expr) : MetaM Nat := do
-  let `(expr| ?a + ?b) ← mk | return 42
+  let `(?a + ?b) ← mk | return 42
   let _ := (a, b)
   return 7
 
@@ -481,7 +481,7 @@ end DoLetArrowElse
 section DoLetMutExprBinders
 
 def doLetMutExprBinders (e : Expr) : MetaM Nat := do
-  let mut `(expr| ?a + ?b) := e | return 0
+  let mut `(?a + ?b) := e | return 0
   if a == b then
     a := mkNatLit 99
   return if a == mkNatLit 99 then 2 else 1
@@ -498,7 +498,7 @@ end DoLetMutExprBinders
 section DoLetMutTuple
 
 def doLetMutTupleAndLegacy (e : Expr) : MetaM (Option Expr) := do
-  let `(expr| ?a + ?b) := e | return none
+  let `(?a + ?b) := e | return none
   let mut k := 1
   if a == b then
     k := k + 1
@@ -515,16 +515,16 @@ section LegacyDo
 set_option backward.do.legacy true
 
 def legacyDoPatterns (e : Expr) (mk : MetaM Expr) : MetaM Nat := do
-  let `(expr| ?a + ?b) := e | return 100
+  let `(?a + ?b) := e | return 100
   let _ := (a, b)
-  let `(expr| ?c * _) ← mk | return 200
+  let `(?c * _) ← mk | return 200
   let _ := c
-  if let `(expr| 0 + ?r) := e then
+  if let `(0 + ?r) := e then
     let _ := r
     return 1
   else
     match e with
-    | `(expr| ?x + $x) => return 2
+    | `(?x + $x) => return 2
     | _ => return 3
 
 #guard_msgs in
@@ -546,7 +546,7 @@ error: repeated pattern variable `?x`; use `$x` to pin
 #guard_msgs in
 def rejectLegacyDoRepeatedLetElse (e : Expr) : MetaM Nat := do
   let mut k := 0
-  let `(expr| ?x + ?x) := e | return k
+  let `(?x + ?x) := e | return k
   let _ := x
   return k + 1
 
@@ -558,7 +558,7 @@ def matchInTermElabAndStateAndOption (e : Expr) : Lean.Elab.TermElabM (Option Na
   let act : OptionT (StateT Nat MetaM) Nat := do
     let s ← get
     match e with
-    | `(expr| ?a + ?b) =>
+    | `(?a + ?b) =>
       let _ := (a, b)
       set (s + 10)
       return s + 10
@@ -592,9 +592,9 @@ section CodeDedupAndSingleDiscrEval
 
 def dupCheckTerm (e : Option (Expr × Expr)) : MetaM Nat :=
   match e with
-  | some (`(expr| ?a + ?b), `(expr| $a * ?c)) =>
+  | some (`(?a + ?b), `($a * ?c)) =>
     let _ := (b, c); pure (markerA 1)
-  | some (`(expr| ?x + ?y), `(expr| ?z + $x)) =>
+  | some (`(?x + ?y), `(?z + $x)) =>
     let _ := (y, z); pure (markerB 2)
   | _ => pure (markerElse 3)
 
@@ -602,10 +602,10 @@ def dupCheckDo (xs : List Expr) : MetaM Nat := do
   let mut acc := 0
   for e in xs do
     match e with
-    | `(expr| ?a + ?b) =>
+    | `(?a + ?b) =>
       let _ := (a, b)
       acc := acc + markerA 1
-    | `(expr| ?c * ?d) =>
+    | `(?c * ?d) =>
       let _ := (c, d)
       acc := acc + markerB 2
     | _ =>
@@ -616,9 +616,9 @@ def dupCheckDo (xs : List Expr) : MetaM Nat := do
 -- Identical patterns across branches / or-patterns must reuse one `exprPat` aux constant.
 def sharedPatDedup (p : Expr × Nat) : MetaM Nat :=
   match p with
-  | (`(expr| Nat.add ?a (Nat.succ ?b)), 0)
-  | (`(expr| Nat.add ?a (Nat.succ ?b)), 1) => let _ := (a, b); return 1
-  | (`(expr| Nat.add ?x (Nat.succ ?y)), _) => let _ := (x, y); return 2
+  | (`(Nat.add ?a (Nat.succ ?b)), 0)
+  | (`(Nat.add ?a (Nat.succ ?b)), 1) => let _ := (a, b); return 1
+  | (`(Nat.add ?x (Nat.succ ?y)), _) => let _ := (x, y); return 2
   | _ => return 3
 
 private def countConstOccs (target : Name) (e : Expr) : Nat :=
@@ -686,9 +686,9 @@ def testSingleDiscrEval : MetaM Unit := do
     return mkNatAdd (mkNatLit 2) (mkNatLit 3)
   let act : MetaM Nat := do
     match ← mkExpr with
-    | `(expr| 1 + 1) => return 1
-    | `(expr| 2 + 2) => return 2
-    | `(expr| 2 + 3) => return 3
+    | `(1 + 1) => return 1
+    | `(2 + 2) => return 2
+    | `(2 + 3) => return 3
     | _ => return 4
   let env ← getEnv
   let (res, _, _) ← act.toIO { fileName := "", fileMap := default } { env }
@@ -708,7 +708,7 @@ section MatchModuloSharedAndOverride
 def matchModuloSharedAndOverride (e : Expr) : MetaM String :=
   match (modulo := defeq) e with
   | `(expr/structural| myDefId 0) => return "exact_structural"
-  | `(expr| myDefId 0) => return "modulo_defeq"
+  | `(myDefId 0) => return "modulo_defeq"
   | _ => return "other"
 
 #guard_msgs in
@@ -729,7 +729,7 @@ section MatchModuloWithItemsAndFlags
 def matchModuloWithItemsAndFlags (e : Expr) : MetaM String :=
   match (modulo := structural[+myDefId] +beta) e with
   | `(expr[-myDefId]| myDefId 0) => return "wait"
-  | `(expr| myDefId 0) => return "merged"
+  | `(myDefId 0) => return "merged"
   | _ => return "other"
 
 #guard_msgs in
@@ -743,7 +743,7 @@ section MatchModuloDoAndNested
 
 def matchModuloDoAndNested (mk : MetaM Expr) (n : Nat) : MetaM Nat := do
   match (dependent := false) (modulo := defeq) ← mk with
-  | `(expr| myDefId 0) =>
+  | `(myDefId 0) =>
     let p := (n, n + 1)
     match p with
     | (0, k) => return k
@@ -761,8 +761,8 @@ section MatchModuloMultiDiscr
 
 def matchModuloMultiDiscr (e : Expr) (n : Nat) : MetaM Nat :=
   match (modulo := defeq) e, n with
-  | `(expr| myDefId 0), 0 => return 10
-  | `(expr| myDefId 0), k => return k + 1
+  | `(myDefId 0), 0 => return 10
+  | `(myDefId 0), k => return k + 1
   | _, _ => return 0
 
 #guard_msgs in
@@ -786,7 +786,7 @@ section MatchModuloGeneralizingFalse
 def matchModuloGeneralizingFalse (e : Expr) (h : e = e) : MetaM Bool :=
   let _ := h
   match (generalizing := false) (modulo := defeq) e with
-  | `(expr| myDefId 0) => return true
+  | `(myDefId 0) => return true
   | _ => return false
 
 #guard_msgs in
@@ -822,7 +822,7 @@ _
 #guard_msgs in
 def missingCatchAll (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| ?x) => let _ := x; return 1
+  | `(?x) => let _ := x; return 1
 
 /--
 error: Missing cases:
@@ -832,7 +832,7 @@ error: Missing cases:
 def missingNestedCatchAll (o : Option Expr) : MetaM Nat :=
   match o with
   | none => return 0
-  | some `(expr| ?x) => let _ := x; return 1
+  | some `(?x) => let _ := x; return 1
 
 /--
 error: Redundant alternative: Any expression matching
@@ -863,7 +863,7 @@ set_option match.ignoreUnusedAlts true in
 def ignoreUnusedNonDepNoSorry (e : Expr) : MetaM Nat :=
   match e with
   | _ => return 0
-  | `(expr| ?x) => let _ := x; return 1
+  | `(?x) => let _ := x; return 1
 
 /--
 info: 'ExprQuotMatchTest.ignoreUnusedNonDepNoSorry' depends on axioms:
@@ -876,7 +876,7 @@ set_option match.ignoreUnusedAlts true in
 def ignoreUnusedDepNoSorry (n : Nat) (e : Expr) : MetaM (Fin (n + 1)) :=
   match h : n, e with
   | k, _ => let _ := h; return ⟨min k n, by omega⟩
-  | 0, `(expr| ?x) => let _ := h; let _ := x; return ⟨0, by omega⟩
+  | 0, `(?x) => let _ := h; let _ := x; return ⟨0, by omega⟩
 
 /--
 info: 'ExprQuotMatchTest.ignoreUnusedDepNoSorry' depends on axioms:
@@ -885,43 +885,67 @@ info: 'ExprQuotMatchTest.ignoreUnusedDepNoSorry' depends on axioms:
 #guard_msgs (whitespace := lax) in
 #print axioms ignoreUnusedDepNoSorry
 
-/-! ### Equality proof (`h :` / `eq :=`) restrictions -/
+/-! ### Equality proof (`h :` / `eq :=`) support and top-level restrictions -/
 
 /--
-error: `h:` equality proof is not supported on a discriminant matched with `expr` quotations
-(the `Expr` values may only be related, not equal)
+error: `h:` cannot prove meta-level `Expr` equality for a top-level quotation pattern;
+use `mkEqRefl` for an object-level kernel equality proof
 -/
 #guard_msgs (whitespace := lax) in
 def rejectEqProofOnQuot (e : Expr) : MetaM Nat :=
   match h : e with
-  | `(expr| ?a) => let _ := (h, a); return 1
+  | `(?a) => let _ := (h, a); return 1
   | _ => return 0
 
-/--
-error: `h:` equality proof is not supported on a discriminant matched with `expr` quotations
-(the `Expr` values may only be related, not equal)
--/
-#guard_msgs (whitespace := lax) in
-def rejectEqProofOnNestedQuot (o : Option Expr) : MetaM Nat :=
+section AllowEqProofOnNestedQuot
+
+def allowEqProofOnNestedQuot (o : Option Expr) : MetaM Bool :=
   match h : o with
-  | some `(expr| ?a) => let _ := (h, a); return 1
-  | _ => return 0
+  | some `(?a) =>
+    have : o.isSome = true := by simp [h]
+    let _ := a
+    return true
+  | some _ => return false
+  | none => return false
+
+def countAddItems (xs : List Expr) : MetaM Nat := do
+  match h : xs with
+  | `((?a : Nat) + _) :: rest =>
+    have : rest.length < xs.length := by simp [h]
+    let _ := a
+    return 1 + (← countAddItems rest)
+  | _ :: rest =>
+    have : rest.length < xs.length := by simp [h]
+    countAddItems rest
+  | [] => return 0
+termination_by xs.length
+
+#guard_msgs in
+#eval show MetaM Unit from do
+  withLocalDeclD `x (mkConst ``Nat) fun x =>
+  withLocalDeclD `y (mkConst ``Nat) fun y => do
+  let addXY := mkNatAdd x y
+  check (← allowEqProofOnNestedQuot (some addXY)) "allowEqProofOnNestedQuot some failed"
+  check (!(← allowEqProofOnNestedQuot none)) "allowEqProofOnNestedQuot none failed"
+  check ((← countAddItems [addXY, x, addXY]) == 2) "countAddItems failed"
+
+end AllowEqProofOnNestedQuot
 
 /--
-error: `h:` equality proof is not supported on a discriminant matched with `expr` quotations
-(the `Expr` values may only be related, not equal)
+error: `h:` cannot prove meta-level `Expr` equality for a top-level quotation pattern;
+use `mkEqRefl` for an object-level kernel equality proof
 -/
 #guard_msgs (whitespace := lax) in
 def rejectEqProofOnCol1 (n : Nat) (e : Expr) : MetaM Nat :=
   match n, h : e with
-  | 0, `(expr| ?a) => let _ := (h, a); return 1
+  | 0, `(?a) => let _ := (h, a); return 1
   | _, _ => return 0
 
 section AllowEqProofOnNonQuotCol0
 
 def allowEqProofOnNonQuotCol0 (n : Nat) (e : Expr) : MetaM Nat :=
   match h : n, e with
-  | 0, `(expr| ?a) =>
+  | 0, `(?a) =>
     let _ : n = 0 := h
     let _ := a
     return 1
@@ -938,22 +962,22 @@ def allowEqProofOnNonQuotCol0 (n : Nat) (e : Expr) : MetaM Nat :=
 end AllowEqProofOnNonQuotCol0
 
 /--
-error: `h:` equality proof is not supported on a discriminant matched with `expr` quotations
-(the `Expr` values may only be related, not equal)
+error: `h:` cannot prove meta-level `Expr` equality for a top-level quotation pattern;
+use `mkEqRefl` for an object-level kernel equality proof
 -/
 #guard_msgs (whitespace := lax) in
 def rejectTermLetEq (e : Expr) : MetaM Nat :=
-  let (eq := h) `(expr| ?a) := e
+  let (eq := h) `(?a) := e
   let _ := (h, a)
   return 1
 
 /--
-error: `h:` equality proof is not supported on a discriminant matched with `expr` quotations
-(the `Expr` values may only be related, not equal)
+error: `h:` cannot prove meta-level `Expr` equality for a top-level quotation pattern;
+use `mkEqRefl` for an object-level kernel equality proof
 -/
 #guard_msgs (whitespace := lax) in
 def rejectDoLetEq (e : Expr) : MetaM Nat := do
-  let (eq := h) `(expr| ?a) := e | return 0
+  let (eq := h) `(?a) := e | return 0
   let _ := (h, a)
   return 1
 
@@ -965,7 +989,7 @@ error: repeated pattern variable `?x`; use `$x` to pin
 #guard_msgs in
 def rejectRepeatedBinder (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| ?x + ?x) => let _ := x; return 1
+  | `(?x + ?x) => let _ := x; return 1
   | _ => return 0
 
 /--
@@ -973,7 +997,7 @@ error: repeated pattern variable `?x`; use `$x` to pin
 -/
 #guard_msgs in
 def rejectRepeatedBinderInDoLetElse (e : Expr) : MetaM Nat := do
-  let `(expr| ?x + ?x) := e | return 0
+  let `(?x + ?x) := e | return 0
   let _ := x
   return 1
 
@@ -982,7 +1006,7 @@ error: repeated pattern variable `?x`; use `$x` to pin
 -/
 #guard_msgs in
 def rejectRepeatedBinderInDoIfLet (e : Expr) : MetaM Nat := do
-  if let `(expr| ?x + ?x) := e then
+  if let `(?x + ?x) := e then
     let _ := x
     return 1
   else
@@ -992,21 +1016,21 @@ def rejectRepeatedBinderInDoIfLet (e : Expr) : MetaM Nat := do
 #guard_msgs in
 def rejectUnknownPin (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| $unknownPin + ?y) => let _ := y; return 1
+  | `($unknownPin + ?y) => let _ := y; return 1
   | _ => return 0
 
 /-- error: expected `$e` pin; use `_` for a wildcard -/
 #guard_msgs in
 def rejectWildcardPin (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| $_ + ?y) => let _ := y; return 1
+  | `($_ + ?y) => let _ := y; return 1
   | _ => return 0
 
 /-- error: mutable variable `x` cannot be shadowed -/
 #guard_msgs in
 def rejectMutVarShadowing (e : Expr) : MetaM Nat := do
   let mut x := mkNatLit 1
-  if let `(expr| ?x + ?y) := e then
+  if let `(?x + ?y) := e then
     let _ := y
     return 1
   else
@@ -1017,7 +1041,7 @@ section AllowMutVarPin
 
 def allowMutVarPin (e : Expr) : MetaM Bool := do
   let mut x := mkNatLit 1
-  if let `(expr| $x + ?y) := e then
+  if let `($x + ?y) := e then
     let _ := y
     return true
   else
@@ -1080,7 +1104,7 @@ Hint: Type class instance resolution failures can be inspected with the
 #guard_msgs (whitespace := lax) in
 def rejectInvalidAddTC (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| 1 + "hello") => return 1
+  | `(1 + "hello") => return 1
   | _ => return 0
 
 /--
@@ -1093,7 +1117,7 @@ Hint: Type class instance resolution failures can be inspected with the
 #guard_msgs (whitespace := lax) in
 def rejectInvalidTypedBinderTC (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| (?x : Bool) + 1) => let _ := x; return 1
+  | `((?x : Bool) + 1) => let _ := x; return 1
   | _ => return 0
 
 /--
@@ -1103,7 +1127,7 @@ error: expr quotation matching requires a monad lifting `MetaM`, got result type
 #guard_msgs in
 def rejectNonMetaMonad (e : Expr) : Id Nat :=
   match e with
-  | `(expr| ?a + ?b) => let _ := (a, b); 1
+  | `(?a + ?b) => let _ := (a, b); 1
   | _ => 0
 
 /--
@@ -1154,13 +1178,13 @@ section DepHBasic
 
 def depH1 (n : Nat) (h : n = n) (e : Expr) : MetaM (Fin (n + 1)) :=
   match h1 : n, e with
-  | 0, `(expr| Nat.zero) =>
+  | 0, `(Nat.zero) =>
     let _ := h; let _ := h1
     return ⟨0, by omega⟩
-  | 0, `(expr| Nat.succ _) =>
+  | 0, `(Nat.succ _) =>
     let _ := h1
     return ⟨0, by omega⟩
-  | _, `(expr| ?a + ?b) =>
+  | _, `(?a + ?b) =>
     let _ := a; let _ := b; let _ := h1
     return ⟨0, by omega⟩
   | k, _ =>
@@ -1183,7 +1207,7 @@ section DepHAs
 
 def depHAs (n : Nat) (e : Expr) : MetaM (Fin (n + 1)) :=
   match h1 : n, e with
-  | x@0, `(expr| ?a) =>
+  | x@0, `(?a) =>
     let _ := x; let _ := a; let _ := h1
     return ⟨0, by omega⟩
   | k, _ =>
@@ -1208,10 +1232,10 @@ def depVecH : {n : Nat} → TestVec Expr n → MetaM Nat
   | _, .nil => return 0
   | n + 1, v@(.cons e _) =>
     match h1 : n + 1, hv : v, e with
-    | _ + 1, .cons _ _, `(expr| Nat.zero) =>
+    | _ + 1, .cons _ _, `(Nat.zero) =>
       let _ := h1; let _ := hv
       return 1
-    | _ + 1, .cons _ _, `(expr| Nat.succ _) =>
+    | _ + 1, .cons _ _, `(Nat.succ _) =>
       let _ := h1; let _ := hv
       return 2
     | _, _, _ =>
@@ -1232,8 +1256,8 @@ section NonDepHFall
 
 def nonDepHFall (n : Nat) (e : Expr) : MetaM Nat :=
   match h1 : n, e with
-  | 0, `(expr| Nat.zero) => let _ := h1; return 10
-  | 0, `(expr| Nat.succ _) => let _ := h1; return 20
+  | 0, `(Nat.zero) => let _ := h1; return 10
+  | 0, `(Nat.succ _) => let _ := h1; return 20
   | k, _ => if k == n then return 30 else return 99
 
 #guard_msgs in
@@ -1251,9 +1275,9 @@ section DepTwoGroupsH
 
 def testDepTwoGroupsH (n : Nat) (h : n = n) (e : Expr) : MetaM (Fin (n + 1)) :=
   match h1 : n, e with
-  | 0, `(expr| Nat.zero) =>
+  | 0, `(Nat.zero) =>
     let _ := h; let _ := h1; return ⟨0, by omega⟩
-  | _ + 1, `(expr| Nat.succ _) =>
+  | _ + 1, `(Nat.succ _) =>
     let _ := h; let _ := h1; return ⟨0, by omega⟩
   | k, _ =>
     let _ := h; let _ := h1; return ⟨min k n, by omega⟩
@@ -1273,7 +1297,7 @@ section GenShadowName
 
 def testGenShadowName (e : Expr) (a : e = e) : MetaM Bool :=
   match e with
-  | `(expr| ?a + _) => return a.isApp
+  | `(?a + _) => return a.isApp
   | _ =>
     let _ := a
     return false
@@ -1291,12 +1315,12 @@ section ProofIrrelevance
 
 def checkProofTrueIntro (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| True.intro) => return true
+  | `(True.intro) => return true
   | _ => return false
 
 def checkProofRefl0 (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| @Eq.refl Nat 0) => return true
+  | `(@Eq.refl Nat 0) => return true
   | _ => return false
 
 #guard_msgs in
@@ -1320,22 +1344,22 @@ section SortPatterns
 
 def checkSortProp (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| Prop) => return true
+  | `(Prop) => return true
   | _ => return false
 
 def checkSortType0 (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| Type) => return true
+  | `(Type) => return true
   | _ => return false
 
 def checkSortTypeU (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| Type _) => return true
+  | `(Type _) => return true
   | _ => return false
 
 def checkSortAny (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| Sort _) => return true
+  | `(Sort _) => return true
   | _ => return false
 
 #guard_msgs in
@@ -1467,7 +1491,7 @@ section ModuloLocalPinNoCapture
 
 def checkModuloNoCapture (v : Expr) (p : Expr × Expr) : MetaM Nat :=
   match (modulo := structural[+$v]) p with
-  | (v, `(expr| Nat.add Nat.zero 0)) =>
+  | (v, `(Nat.add Nat.zero 0)) =>
     if v == mkConst ``Nat.succ then return 1 else return 2
   | _ => return 0
 
@@ -1475,7 +1499,7 @@ def testDoModPin (v : Expr) (xs : List (Expr × Expr)) : MetaM Nat := do
   let mut acc := 0
   for p in xs do
     match (modulo := structural[+$v]) p with
-    | (v, `(expr| Nat.add Nat.zero 0)) =>
+    | (v, `(Nat.add Nat.zero 0)) =>
       if v == mkConst ``Nat.succ then
         acc := acc + 10
         continue
@@ -1501,7 +1525,7 @@ section MotiveBeforeModulo
 
 def checkMotiveBeforeModulo (n : Nat) (e : Expr) : MetaM (Fin (n + 1)) :=
   match (motive := (k : Nat) → Expr → MetaM (Fin (k + 1))) (modulo := structural +beta) n, e with
-  | 0, `(expr| (fun x => x) Nat.zero) => return ⟨0, by omega⟩
+  | 0, `((fun x => x) Nat.zero) => return ⟨0, by omega⟩
   | _, _ => return ⟨0, by omega⟩
 
 #guard_msgs in
@@ -1517,8 +1541,8 @@ section ModuloOrAlt
 
 def testModuloOrAlt (e : Expr) : MetaM (Option Expr) :=
   match (modulo := defeq) e with
-  | `(expr| (?a, myDefId 0))
-  | `(expr| (myDefId 0, ?a)) => return some a
+  | `((?a, myDefId 0))
+  | `((myDefId 0, ?a)) => return some a
   | _ => return none
 
 #guard_msgs in
@@ -1535,7 +1559,7 @@ section DoDepModulo
 
 def testDoDepModulo (n : Nat) (e : Expr) : MetaM (Fin (n + 1)) := do
   match (dependent := true) (modulo := defeq) n, e with
-  | 0, `(expr| myDefId 0) => return ⟨0, by omega⟩
+  | 0, `(myDefId 0) => return ⟨0, by omega⟩
   | k, _ => return ⟨k, by omega⟩
 
 #guard_msgs in
@@ -1568,7 +1592,7 @@ section TacticMLift
 example (e : Expr) (_h : e = mkConst ``Nat.zero) : True := by
   have _checkTacticM : Lean.Elab.Tactic.TacticM Bool := do
     match e with
-    | `(expr| Nat.zero) => return true
+    | `(Nat.zero) => return true
     | _ => return false
   trivial
 
@@ -1600,7 +1624,7 @@ error: expr quotation matching requires a monad lifting `MetaM`, got result type
 #guard_msgs (substring := true) in
 def rejectPlainNonMonadic (e : Expr) : Nat :=
   match e with
-  | `(expr| ?x) => let _ := x; 1
+  | `(?x) => let _ := x; 1
   | _ => 0
 
 end ModuloInvalidOptionErrors
@@ -1609,7 +1633,7 @@ section TopAsH
 
 def testTopAsH (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | x@h:`(expr| ?a + ?b) =>
+  | x@h:`(?a + ?b) =>
     let _ := h; let _ := b
     return some (x, a)
   | _ => return none
@@ -1626,8 +1650,8 @@ section ReorderedStructVars
 
 def testReorderedStructVars (p : Expr × Expr) : MetaM Nat :=
   match p with
-  | { fst := x, snd := `(expr| $x + 1) } => return 1
-  | { snd := `(expr| $y + 2), fst := y } => return 2
+  | { fst := x, snd := `($x + 1) } => return 1
+  | { snd := `($y + 2), fst := y } => return 2
   | _ => return 3
 
 #guard_msgs in
@@ -1647,7 +1671,7 @@ section MixedHOPinAndFirstOrder
 
 def testMixedHOPinAndFirstOrder (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| (∀ x : Nat, ?P x) ∧ ($P 0)) => return some P
+  | `((∀ x : Nat, ?P x) ∧ ($P 0)) => return some P
   | _ => return none
 
 #guard_msgs in
@@ -1666,7 +1690,7 @@ section DepHOForall
 
 def testDepHOForall (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ (α : Type) (x : α), ?P α x) => return some P
+  | `(∀ (α : Type) (x : α), ?P α x) => return some P
   | _ => return none
 
 #guard_msgs in
@@ -1687,7 +1711,7 @@ section DepHOEq
 
 def testDepHOEq (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ (α : Type) (x : α), ?P α x = x) => return some P
+  | `(∀ (α : Type) (x : α), ?P α x = x) => return some P
   | _ => return none
 
 #guard_msgs in
@@ -1706,7 +1730,7 @@ section DepHOPin
 
 def testDepHOPin (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| (∀ (α : Type) (x : α), ?P α x) ∧ (∀ (β : Type) (y : β), $P β y)) => return some P
+  | `((∀ (α : Type) (x : α), ?P α x) ∧ (∀ (β : Type) (y : β), $P β y)) => return some P
   | _ => return none
 
 #guard_msgs in
@@ -1726,7 +1750,7 @@ section DepHOFinAndMissingArg
 
 def testDepHOFin (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ (n : Nat) (v : Fin n), ?P n v) => return some P
+  | `(∀ (n : Nat) (v : Fin n), ?P n v) => return some P
   | _ => return none
 
 #guard_msgs in
@@ -1740,7 +1764,7 @@ def testDepHOFin (e : Expr) : MetaM (Option Expr) :=
 #guard_msgs in
 def rejectDepHOMissingArg (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ (α : Type) (x : α), ?P x) => return some P
+  | `(∀ (α : Type) (x : α), ?P x) => return some P
   | _ => return none
 
 end DepHOFinAndMissingArg
@@ -1749,7 +1773,7 @@ section LetHONested
 
 def testLetHONested (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| fun (x : Nat) => let y := x + 1; ?P y) => return some P
+  | `(fun (x : Nat) => let y := x + 1; ?P y) => return some P
   | _ => return none
 
 #guard_msgs in
@@ -1769,7 +1793,7 @@ section LetHOFlat
 
 def testLetHOFlat (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| let y := 1; ?P y) => return some P
+  | `(let y := 1; ?P y) => return some P
   | _ => return none
 
 #guard_msgs in
@@ -1809,7 +1833,7 @@ section SelfPinLinterClean
 
 def testSelfPinLinterClean (e : Expr) : MetaM Bool :=
   match e with
-  | `(expr| ?p + $p) => return true
+  | `(?p + $p) => return true
   | _ => return false
 
 #guard_msgs in
@@ -1825,7 +1849,7 @@ section BoundedHOEta
 
 def testBoundedHOLamStructural (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| fun (x : Nat) => ?P x) => return some P
+  | `(fun (x : Nat) => ?P x) => return some P
   | _ => return none
 
 def testBoundedHOLamEta (e : Expr) : MetaM (Option Expr) :=
@@ -1835,7 +1859,7 @@ def testBoundedHOLamEta (e : Expr) : MetaM (Option Expr) :=
 
 def testBoundedHOLetStructural (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | `(expr| let y : Nat := ?v; ?P y) => return some (v, P)
+  | `(let y : Nat := ?v; ?P y) => return some (v, P)
   | _ => return none
 
 #guard_msgs in
@@ -1872,7 +1896,7 @@ distinct bound variables (Miller pattern)
 #guard_msgs (whitespace := lax) in
 def rejectNonMillerApp (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ x : Nat, ?P (x + 1) = (0 : Nat)) => return some P
+  | `(∀ x : Nat, ?P (x + 1) = (0 : Nat)) => return some P
   | _ => return none
 
 /--
@@ -1882,7 +1906,7 @@ requires distinct bound variables)
 #guard_msgs (whitespace := lax) in
 def rejectNonMillerDupVar (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ x : Nat, ?P x x) => return some P
+  | `(∀ x : Nat, ?P x x) => return some P
   | _ => return none
 
 /--
@@ -1892,27 +1916,27 @@ distinct bound variables (Miller pattern)
 #guard_msgs (whitespace := lax) in
 def rejectNonMillerMixedConst (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ x : Nat, ?P x (0 : Nat)) => return some P
+  | `(∀ x : Nat, ?P x (0 : Nat)) => return some P
   | _ => return none
 
 def allowSelfPinNonMiller (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| (∀ x : Nat, ?P x) ∧ (∀ y : Nat, $P (y + 1))) => return some P
+  | `((∀ x : Nat, ?P x) ∧ (∀ y : Nat, $P (y + 1))) => return some P
   | _ => return none
 
 def matchReorderedHO (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ x y : Nat, ?R y x) => return some R
+  | `(∀ x y : Nat, ?R y x) => return some R
   | _ => return none
 
 def matchNoEscapeConst (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| ∀ _ : Nat, ?Q) => return some Q
+  | `(∀ _ : Nat, ?Q) => return some Q
   | _ => return none
 
 def matchFirstOrderUnderBinder (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | `(expr| ∀ _ : Nat, ?f ?a) => return some (f, a)
+  | `(∀ _ : Nat, ?f ?a) => return some (f, a)
   | _ => return none
 
 #guard_msgs in
@@ -1999,7 +2023,7 @@ def wrapWithEqModTag {α : Type} [EqModTag α] (x : α) : α := x
 def matchModuloStructInstOverride (e : Expr) : MetaM Nat :=
   match (modulo := +inst) e with
   | `(expr -inst| @wrapWithEqModTag Nat _ (0 : Nat)) => return 1
-  | `(expr| @wrapWithEqModTag Nat _ (0 : Nat))       => return 2
+  | `(@wrapWithEqModTag Nat _ (0 : Nat))       => return 2
   | _                                                => return 0
 
 def matchCombinedStructItemsInstZeta (e : Expr) : MetaM Bool :=
@@ -2052,5 +2076,24 @@ def matchContextZetaDelta (cx : Expr) (e : Expr) : MetaM (Bool × Bool × Bool) 
     "structural vs defeq eta boundary check failed"
 
 end EngineAndFlagSemantics
+
+section ExplicitExprSyntaxCompat
+
+def matchMixedBareAndExplicit (e : Expr) : MetaM Nat :=
+  match e with
+  | `((?x : Nat) + $x) => let _ := x; return 1
+  | `(expr| (?a : Nat) + ?b) => let _ := (a, b); return 2
+  | _ => return 0
+
+#guard_msgs in
+#eval show MetaM Unit from do
+  withLocalDeclD `x (mkConst ``Nat) fun x =>
+  withLocalDeclD `y (mkConst ``Nat) fun y => do
+  check ((← matchMixedBareAndExplicit (mkNatAdd x x)) == 1)
+    "explicit/bare compat self-sum failed"
+  check ((← matchMixedBareAndExplicit (mkNatAdd x y)) == 2)
+    "explicit/bare compat general sum failed"
+
+end ExplicitExprSyntaxCompat
 
 end ExprQuotMatchTest

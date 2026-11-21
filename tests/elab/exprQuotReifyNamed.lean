@@ -184,9 +184,9 @@ theorem reflect_eq {Γ : Ctx} {s : SmtSort} {ρ : Env Γ} {e₁ e₂ : NExpr} {l
 
 partial def reifySort (e : Expr) : MetaM SmtSort := do
   match ← instantiateMVars e with
-  | `(expr| Bool) => return .bool
-  | `(expr| Int) => return .int
-  | `(expr| ?a → ?b) => return .arr (← reifySort a) (← reifySort b)
+  | `(Bool) => return .bool
+  | `(Int) => return .int
+  | `(?a → ?b) => return .arr (← reifySort a) (← reifySort b)
   | e => throwError "named_reflect: unsupported sort{indentExpr e}"
 
 /-- Object names of Lean locals, names in scope (innermost first), combinators to unfold. -/
@@ -220,13 +220,13 @@ partial def reify (e : Expr) : ReifyM NExpr := do
   if let .fvar x := e then if let some n := (← read).names.get? x then return .var n
   if let some i := e.int? then return .intLit i
   match e with
-  | `(expr| true) => return .boolLit true
-  | `(expr| false) => return .boolLit false
-  | `(expr| !(?b : Bool)) => return .not (← reify b)
-  | `(expr| @ite (_ : Type) ((?c : Bool) = true) _ ?x ?y) =>
+  | `(true) => return .boolLit true
+  | `(false) => return .boolLit false
+  | `(!(?b : Bool)) => return .not (← reify b)
+  | `(@ite (_ : Type) ((?c : Bool) = true) _ ?x ?y) =>
     return .ite (← reify c) (← reify x) (← reify y)
-  | `(expr| (?a : Int) == ?b) => return .eq (← reify a) (← reify b)
-  | `(expr| (?a : Int) + ?b) => return .add (← reify a) (← reify b)
+  | `((?a : Int) == ?b) => return .eq (← reify a) (← reify b)
+  | `((?a : Int) + ?b) => return .add (← reify a) (← reify b)
   -- Named-AST reification mixes `.lam`/`.letE` constructor arms directly in the same `match`
   -- (ADR-002, ADR-009) to inspect syntactic binder `Name`s in `O(depth)` without `O(depth²)`
   -- re-abstraction; semantic HO reification uses `?P x` + `P.beta #[x]` (`exprQuotReifyPhoas`).
@@ -271,7 +271,7 @@ syntax (name := namedReflect) "named_reflect" (" [" ident,* "]")? : tactic
   let ids := if stx[1].isNone then #[] else stx[1][1].getSepArgs
   let unfold ← ids.foldlM (init := {}) fun s id =>
     return s.insert (← realizeGlobalConstNoOverloadWithInfo id)
-  let `(expr| @Eq (?α : Type) ?lhs ?rhs) ← getMainTarget
+  let `(@Eq (?α : Type) ?lhs ?rhs) ← getMainTarget
     | throwError "named_reflect: expected an equation"
   let ((e₁, e₂), Γ, ρ) ← withFreeContext unfold do return (← reify lhs, ← reify rhs)
   let pf ← `(expr| @reflect_eq $(toExpr Γ) $(toExpr (← reifySort α)) $ρ $(toExpr e₁)

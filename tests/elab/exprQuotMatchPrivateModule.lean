@@ -18,7 +18,7 @@ private meta def check (cond : Bool) (msg : String) : MetaM Unit := do
 
 private meta def privMetaWithPrivateLean (e : Expr) : MetaM (Option (Expr × Expr)) :=
   match e with
-  | `(expr| ?a + ?b) => return some (a, b)
+  | `(?a + ?b) => return some (a, b)
   | _ => return none
 
 meta section

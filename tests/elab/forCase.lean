@@ -217,7 +217,7 @@ private def legacyMulti (xs ys : List (Option Nat)) : Id (List (Nat × Nat)) := 
 
 private def legacyExprQuot (xs : List (Expr × Expr)) : MetaM (List (Expr × Expr)) := do
   let mut out := []
-  for case (h, `(expr| ?P → _)) in xs do
+  for case (h, `(?P → _)) in xs do
     out := out.concat (h, P)
   return out
 
@@ -253,8 +253,8 @@ run_meta do
     -- Nested `for case` over `localHypTypes` implementing chain rule matching.
     let hyps ← localHypTypes
     let mut chains : List (Expr × Expr × Expr × Expr) := []
-    for case (hx, `(expr| ?A → ?B)) in hyps do
-      for case (hy, `(expr| $B → ?C)) in hyps do
+    for case (hx, `(?A → ?B)) in hyps do
+      for case (hy, `($B → ?C)) in hyps do
         chains := chains.concat (hx, hy, A, C)
     unless chains == [(hImp1, hImp2, p, natTy)] do
       throwError "unexpected nested localHypTypes match result"
@@ -292,7 +292,7 @@ run_meta do
   withLetDecl `v natTy (mkNatLit 7) (nondep := false) fun v =>
   withLetDecl `vAfter natTy (mkNatLit 7) (nondep := false) fun _ => do
     let mut foundLet : Option Expr := none
-    for case (hv, _, some `(expr| 7)) in (← localHypDecls) do
+    for case (hv, _, some `(7)) in (← localHypDecls) do
       foundLet := some hv
       break
     unless foundLet == some v do
@@ -308,7 +308,7 @@ run_meta do
     (mkApp2 (mkConst ``Nat.mul) (mkNatLit 2) (mkNatLit 3))
     (mkApp2 (mkConst ``Nat.mul) (mkNatLit 4) (mkNatLit 5))
   let mut firstReplaced := e
-  for case (`(expr| Nat.mul ?u ?v), ctx) in subterms e do
+  for case (`(Nat.mul ?u ?v), ctx) in subterms e do
     firstReplaced := ctx.fill (← `(expr| Nat.add $v $u))
     break
   let expectedFirst := mkApp2 (mkConst ``Nat.add)
@@ -330,7 +330,7 @@ run_meta do
       (mkNatLit 0)
       (mkLambda `n .default natTy (mkBVar 0))
   let findAddDiscr : MetaM (Option Expr) := do
-    for case (`(expr| Nat.add ?a ?b), ctx) in matchDiscriminants matchE (alsoCasesOn := true) do
+    for case (`(Nat.add ?a ?b), ctx) in matchDiscriminants matchE (alsoCasesOn := true) do
       return some (ctx.fill (← `(expr| Nat.add $b $a)))
     return none
   let some swappedMatchE ← findAddDiscr

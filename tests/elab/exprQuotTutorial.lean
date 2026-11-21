@@ -29,7 +29,7 @@ def describeOpt (o : Option Expr) : MetaM String :=
   match o with
   | none => return "none"
   | some (.lam _ _ _ _) => return "lambda"
-  | some `(expr| (?x : Nat) + ?y) => return s!"add({x.isFVar},{y.isFVar})"
+  | some `((?x : Nat) + ?y) => return s!"add({x.isFVar},{y.isFVar})"
   | some _ => return "other"
 
 abbrev MyNat := Nat
@@ -37,7 +37,7 @@ abbrev MyNat := Nat
 def matchModulo (e : Expr) : MetaM String :=
   match (modulo := reducible) e with
   | `(expr/structural| (?x : Nat) + 0) => let _ := x; return "exact"
-  | `(expr| (?x : MyNat) + 0) => let _ := x; return "reducible"
+  | `((?x : MyNat) + 0) => let _ := x; return "reducible"
   | _ => return "miss"
 
 #guard_msgs in
@@ -49,12 +49,12 @@ run_meta withLocalDeclD `x (mkConst ``Nat) fun x => do
     throwError "unexpected Option/lam match"
   unless (← describeOpt (some xZero)) == "add(true,false)" do throwError "unexpected add"
   let mut zeros := []
-  for case `(expr| (?n : Nat) + 0) in [xOne, xZero] do zeros := zeros ++ [n]
+  for case `((?n : Nat) + 0) in [xOne, xZero] do zeros := zeros ++ [n]
   unless zeros == [x] do throwError "for case mismatch"
   unless (← matchModulo xZero) == "exact" do throwError "modulo structural override failed"
   unless (← matchModulo (← `(expr| ($x : MyNat) + (0 : MyNat)))) == "reducible" do
     throwError "modulo reducible failed"
-  if let `(expr| _ + (?r : Nat)) := xOne then
+  if let `(_ + (?r : Nat)) := xOne then
     unless r == mkNatLit 1 do throwError "if let mismatch"
 
 /-! ## Chapter 2: Binders, Pins, Wildcards, and Miller Patterns
@@ -67,21 +67,21 @@ run_meta withLocalDeclD `x (mkConst ``Nat) fun x => do
   `P.beta #[t]` while preserving inner lambdas under `/structural`. -/
 
 def matchSelfPin (e : Expr) : MetaM Bool :=
-  match e with | `(expr| (?x : Nat) + $x) => return true | _ => return false
+  match e with | `((?x : Nat) + $x) => return true | _ => return false
 
 #guard_msgs in
 run_meta withLocalDeclD `x (mkConst ``Nat) fun x =>
   withLocalDeclD `y (mkConst ``Nat) fun y => do
   unless (← matchSelfPin (← `(expr| ($x : Nat) + $x))) do throwError "self-pin failed"
   if ← matchSelfPin (← `(expr| ($x : Nat) + $y)) then throwError "self-pin matched x + y"
-  let `(expr| $x + ?_) := (← `(expr| ($x : Nat) + $y)) | throwError "external pin failed"
-  let `(expr| _ = _) := (← `(expr| (($x : Nat) + 1) = ($y + 2))) | throwError "wildcards failed"
+  let `($x + ?_) := (← `(expr| ($x : Nat) + $y)) | throwError "external pin failed"
+  let `(_ = _) := (← `(expr| (($x : Nat) + 1) = ($y + 2))) | throwError "wildcards failed"
   match (← `(expr| ∀ n : Nat, n = 0 → n + 1 = 1)) with
-  | `(expr| ∀ x, ?P x → ?Q) => let _ := (P, Q); throwError "bound var escaped into `?Q`"
-  | `(expr| ∀ x, ?P x → _) =>
+  | `(∀ x, ?P x → ?Q) => let _ := (P, Q); throwError "bound var escaped into `?Q`"
+  | `(∀ x, ?P x → _) =>
     unless P == (← `(expr| fun n : Nat => n = 0)) do throwError "Miller P under wildcard mismatch"
   | _ => throwError "expected `∀ x, ?P x → _` to match"
-  let `(expr| ∀ x : Nat, ?P x) := (← `(expr| ∀ n : Nat, n + 1 = 2)) | throwError "Miller failed"
+  let `(∀ x : Nat, ?P x) := (← `(expr| ∀ n : Nat, n + 1 = 2)) | throwError "Miller failed"
   unless P.beta #[mkNatLit 3] == (← `(expr| (3 : Nat) + 1 = 2)) do throwError "P.beta mismatch"
 
 /-! ## Chapter 3: Relations, `[±items]`, `±beta`/`±zeta`, and Projections
@@ -107,7 +107,7 @@ run_meta withLocalDeclD `x (mkConst ``Nat) fun x =>
   let altAdd := mkApp4 (mkConst ``HAdd.hAdd [0, 0, 0]) nat nat nat
     (mkApp2 (mkConst ``instHAdd [0]) nat (mkConst ``altAddNat))
   let altExpr := mkApp2 altAdd x (mkNatLit 0)
-  if let `(expr| (?a : Nat) + 0) := altExpr then
+  if let `((?a : Nat) + 0) := altExpr then
     let _ := a; throwError "plain `/structural` must reject non-canonical `Add`"
   let `(expr +inst| (?a : Nat) + 0) := altExpr | throwError "`+inst` failed"
   unless a == x do throwError "`+inst` capture mismatch"
@@ -133,7 +133,7 @@ run_meta withLocalDeclD `x (mkConst ``Nat) fun x =>
   let subTy := mkApp2 (mkConst ``Subtype [1]) nat pred
   withLocalDeclD `s subTy fun s => do
     let projExpr := Expr.proj ``Subtype 0 s
-    if let `(expr| Subtype.val ?_) := projExpr then throwError "plain structural matched `.proj`"
+    if let `(Subtype.val ?_) := projExpr then throwError "plain structural matched `.proj`"
     let `(expr [Subtype.val]| Subtype.val ?s') := projExpr | throwError "`[Subtype.val]` failed"
     unless s' == s do throwError "`[Subtype.val]` capture mismatch"
     let mkFive ← mkAppM ``Subtype.mk #[mkNatLit 5, ← mkDecideProof (← `(expr| (5 : Nat) > 0))]
@@ -153,7 +153,7 @@ and `?_` (distinct) allocate `.syntheticOpaque` holes; unresolved implicits fail
 
 elab "split_conj" : tactic => withMainContext do
   let goal ← getMainGoal
-  let `(expr| ?a ∧ ?b) ← getMainTarget | throwError "split_conj: expected conjunction"
+  let `(?a ∧ ?b) ← getMainTarget | throwError "split_conj: expected conjunction"
   let pf ← `(expr| (And.intro ?l ?r : $a ∧ $b))
   goal.assign pf
   replaceMainGoal (← getMVarsNoDelayed pf).toList
@@ -210,14 +210,14 @@ run_meta withLocalDeclD `x (mkConst ``Nat) fun x =>
     throwError "expected `none` for `x` and `have`"
   let forallExpr ← `(expr| ∀ n : Nat, n + 0 = n)
   let mut rebuilt? : Option Expr := none
-  for case (`(expr| (?a : Nat) + 0), ctx) in subtermsUnderBinders forallExpr do
+  for case (`((?a : Nat) + 0), ctx) in subtermsUnderBinders forallExpr do
     if ctx.binders.size == 1 then rebuilt? := some (ctx.fill a)
   unless rebuilt? == some (← `(expr| ∀ n : Nat, n = n)) do throwError "under-binders fill mismatch"
   let eqOne ← `(expr| (1 : Nat) = 1)
   let iteExpr ← `(expr| if $eqOne then (1 : Nat) else 2)
   unless (← matchDiscriminants iteExpr |>.toArray).isEmpty do throwError "`ite` is not a `match`"
   let mut iteConds := #[]
-  for case (`(expr| if ?c then _ else _), _) in subterms iteExpr do iteConds := iteConds.push c
+  for case (`(if ?c then _ else _), _) in subterms iteExpr do iteConds := iteConds.push c
   unless iteConds == #[eqOne] do throwError "expected `ite` condition via `subterms`"
 
 /-! ## Chapter 6: `#check_pattern`, `trace.Meta.Match.expr`, and Linters
@@ -258,7 +258,7 @@ run_meta withOptions (·.setBool `trace.Meta.Match.expr true) do
 #guard_msgs (whitespace := lax, substring := true) in
 set_option linter.exprQuot.numeralDefaulting true in
 def lintNumeral (e : Expr) : MetaM Bool :=
-  match e with | `(expr| _ + 0) => return true | _ => return false
+  match e with | `(_ + 0) => return true | _ => return false
 
 /--
 warning: pattern collapses under
@@ -273,7 +273,7 @@ def lintCollapsed (e : Expr) : MetaM Bool :=
 #guard_msgs (whitespace := lax, substring := true) in
 set_option linter.exprQuot.uncheckedType true in
 def lintUncheckedType (e : Expr) : MetaM Bool :=
-  match e with | `(expr| (?x : Nat)) => let _ := x; return true | _ => return false
+  match e with | `((?x : Nat)) => let _ := x; return true | _ => return false
 
 /--
 warning: named pattern variable `?x` inside ordinary syntax quotation in an `Expr` context;
@@ -281,12 +281,13 @@ did you mean `` `(expr| ...) ``?
 
 Note: This linter can be disabled with `set_option linter.exprQuot.syntaxHole false`
 ---
-error: syntax quotation pattern on an `Expr` discriminant; use `` `(expr| ...) ``
+error: syntax quotation pattern on an `Expr` discriminant;
+use `` `(...) `` or `` `(expr| ...) ``
 -/
 #guard_msgs (whitespace := lax) in
 set_option linter.exprQuot.syntaxHole true in
 def lintSyntaxHole (e : Expr) : Nat :=
-  match e with | `(?x + 1) => 1 | _ => 0
+  match e with | `(term| ?x + 1) => 1 | _ => 0
 
 /-! ## Chapter 7: Concise Rocq `Ltac` Comparison
 
