@@ -7,8 +7,7 @@ module
 prelude
 public import Lean.Meta.Tactic.Grind.Arith.Cutsat.Types
 import Init.Data.Int.OfNat
-import Lean.Meta.NatInstTesters
-import Lean.Meta.IntInstTesters
+import Lean.Meta.ExprPatternCore
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Util
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Nat
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Norm
@@ -61,14 +60,11 @@ private def mkEntry (p : Poly) (alt : OrHullAlt) (entries : Array HullEntry) : A
 
 /-- Converts the conjunct `c` at `path` into hull entries. -/
 private def pushEntries (gen : Nat) (path : List Bool) (c : Expr) (entries : Array HullEntry) : GoalM (Array HullEntry) := do
-  let (a, b, isEq, isNat) ← match_expr c with
-    | Eq α a b => pure (a, b, true, α.isConstOf ``Nat)
-    | LE.le α inst a b =>
-      if α.isConstOf ``Nat then
-        unless (← Structural.isInstLENat inst) do return entries
-      else
-        unless (← Structural.isInstLEInt inst) do return entries
-      pure (a, b, false, α.isConstOf ``Nat)
+  let (a, b, isEq, isNat) ← match c with
+    | `((?a : Nat) = ?b) => pure (a, b, true, true)
+    | `((?a : Int) = ?b) => pure (a, b, true, false)
+    | `((?a : Nat) ≤ ?b) => pure (a, b, false, true)
+    | `((?a : Int) ≤ ?b) => pure (a, b, false, false)
     | _ => return entries
   let (a', b', toIntThm?) ← if isNat then
     let (a', h₁) ← natToInt a

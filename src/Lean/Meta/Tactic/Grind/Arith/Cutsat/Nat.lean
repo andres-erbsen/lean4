@@ -8,7 +8,7 @@ prelude
 public import Lean.Meta.Tactic.Grind.Arith.Cutsat.Util
 import Init.Data.Int.OfNat
 import Lean.Meta.Tactic.Grind.Simp
-import Lean.Meta.NatInstTesters
+import Lean.Meta.ExprPatternCore
 public section
 namespace Lean.Meta.Grind.Arith.Cutsat
 
@@ -38,10 +38,7 @@ private def natImage (e e' : Expr) : GoalM Expr := do
   internalize e' (← getGeneration e)
   return e'
 
-/-
-**Note**: It is safe to use (the more efficient) structural instances tests here because `grind` uses the canonicalizer.
--/
-open Structural in
+-- Canonical instances are matched structurally because `grind` uses the canonicalizer.
 /--
 Converts `e : Nat` into an `Int` expression `e'` with a proof of `↑e = e'`.
 The atoms of `e'` are new terms and are internalized where they are built: `↑a` for an opaque
@@ -49,53 +46,38 @@ The atoms of `e'` are new terms and are internalized where they are built: `↑a
 reified structurally by the consumers.
 -/
 private partial def natToInt' (e : Expr) : GoalM (Expr × Expr) := do
-  match_expr e with
-  | HAdd.hAdd _ _ _ inst a b =>
-    if (← isInstHAddNat inst) then
-      let (a', h₁) ← natToInt' a
-      let (b', h₂) ← natToInt' b
-      let h := mkApp6 (mkConst ``Nat.ToInt.add_congr) a b a' b' h₁ h₂
-      return (mkIntAdd a' b', h)
-    else
-      mkNatVar e
-  | HMul.hMul _ _ _ inst a b =>
-    if (← isInstHMulNat inst) then
-      let (a', h₁) ← natToInt' a
-      let (b', h₂) ← natToInt' b
-      let h := mkApp6 (mkConst ``Nat.ToInt.mul_congr) a b a' b' h₁ h₂
-      return (mkIntMul a' b', h)
-    else
-      mkNatVar e
-  | HDiv.hDiv _ _ _ inst a b =>
-    if (← isInstHDivNat inst) then
-      let (a', h₁) ← natToInt' a
-      let (b', h₂) ← natToInt' b
-      let h := mkApp6 (mkConst ``Nat.ToInt.div_congr) a b a' b' h₁ h₂
-      return (← natImage e (mkIntDiv a' b'), h)
-    else
-      mkNatVar e
-  | HMod.hMod _ _ _ inst a b =>
-    if (← isInstHModNat inst) then
-      let (a', h₁) ← natToInt' a
-      let (b', h₂) ← natToInt' b
-      let h := mkApp6 (mkConst ``Nat.ToInt.mod_congr) a b a' b' h₁ h₂
-      return (← natImage e (mkIntMod a' b'), h)
-    else
-      mkNatVar e
-  | OfNat.ofNat _ _ _ =>
+  match e with
+  | `((?a : Nat) + ?b) =>
+    let (a', h₁) ← natToInt' a
+    let (b', h₂) ← natToInt' b
+    let h := mkApp6 (mkConst ``Nat.ToInt.add_congr) a b a' b' h₁ h₂
+    return (mkIntAdd a' b', h)
+  | `((?a : Nat) * ?b) =>
+    let (a', h₁) ← natToInt' a
+    let (b', h₂) ← natToInt' b
+    let h := mkApp6 (mkConst ``Nat.ToInt.mul_congr) a b a' b' h₁ h₂
+    return (mkIntMul a' b', h)
+  | `((?a : Nat) / ?b) =>
+    let (a', h₁) ← natToInt' a
+    let (b', h₂) ← natToInt' b
+    let h := mkApp6 (mkConst ``Nat.ToInt.div_congr) a b a' b' h₁ h₂
+    return (← natImage e (mkIntDiv a' b'), h)
+  | `((?a : Nat) % ?b) =>
+    let (a', h₁) ← natToInt' a
+    let (b', h₂) ← natToInt' b
+    let h := mkApp6 (mkConst ``Nat.ToInt.mod_congr) a b a' b' h₁ h₂
+    return (← natImage e (mkIntMod a' b'), h)
+  | `((@OfNat.ofNat _ _ _ : Nat)) =>
     if let some n ← getNatValue? e then
       let h := mkApp (mkConst ``Nat.ToInt.natCast_ofNat) e
       return (mkIntLit n, h)
     else
       mkNatVar e
-  | HPow.hPow _ _ _ inst a k =>
-    if (← isInstHPowNat inst) then
-      let (a', h₁) ← natToInt' a
-      let h := mkApp4 (mkConst ``Nat.ToInt.pow_congr) a k a' h₁
-      return (← natImage e (mkIntPowNat a' k), h)
-    else
-      mkNatVar e
-  | Fin.val n a =>
+  | `((?a : Nat) ^ (?k : Nat)) =>
+    let (a', h₁) ← natToInt' a
+    let h := mkApp4 (mkConst ``Nat.ToInt.pow_congr) a k a' h₁
+    return (← natImage e (mkIntPowNat a' k), h)
+  | `(@Fin.val ?n ?a) =>
     -- `Fin.val` is treated as an opaque `Nat` variable; the range fact `Fin.isLt` is
     -- the one piece of `Fin`-specific information asserted here. Value-level reasoning
     -- for `Fin` is provided by the `[grind hom]` rules.
@@ -118,8 +100,7 @@ Given `x` whose denotation is `e`, if `e` is of the form `NatCast.natCast a`,
 asserts that it is nonnegative.
 -/
 def assertNatCast (e : Expr) (x : Var) : GoalM Unit := do
-  let_expr NatCast.natCast _ inst a := e | return ()
-  let_expr instNatCastInt := inst | return ()
+  let `((NatCast.natCast ?a : Int)) := e | return ()
   if a.isAppOf ``OfNat.ofNat then return () -- we don't want to propagate constraints such as `2 ≥ 0`
   if (← get').natDef.contains { expr := a } then return ()
   -- Ensure `a` is marked as a `Nat` variable. This can happen when the `natCast` was introduced by the user.
@@ -131,24 +112,19 @@ def assertNatCast (e : Expr) (x : Var) : GoalM Unit := do
 def isNatTerm (e : Expr) : GoalM Bool :=
   return (← get').natToIntMap.contains { expr := e }
 
-/-
-**Note**: It is safe to use (the more efficient) structural instances tests here because `grind` uses the canonicalizer.
--/
-open Structural in
+-- Canonical instances are matched structurally because `grind` uses the canonicalizer.
 private partial def isNonneg (e : Expr) : MetaM Bool := do
-  match_expr e with
-  | OfNat.ofNat _ _ _ =>
+  match e with
+  | `((@OfNat.ofNat _ _ _ : Int)) =>
     let some n ← getIntValue? e | return false
     return (n ≥ 0 : Bool)
-  | HAdd.hAdd _ _ _ i a b => isInstHAddInt i <&&> isNonneg a <&&> isNonneg b
-  | HMul.hMul _ _ _ i a b => isInstHMulInt i <&&> isNonneg a <&&> isNonneg b
-  | HDiv.hDiv _ _ _ i a b => isInstHDivInt i <&&> isNonneg a <&&> isNonneg b
-  | HMod.hMod _ _ _ i a _ => isInstHModInt i <&&> isNonneg a
-  | HPow.hPow _ _ _ i a _ => isInstHPowInt i <&&> isNonneg a
-  | _ =>
-    let_expr NatCast.natCast _ inst _ ← e | return false
-    let_expr instNatCastInt := inst | return false
-    return true
+  | `((?a : Int) + ?b) => isNonneg a <&&> isNonneg b
+  | `((?a : Int) * ?b) => isNonneg a <&&> isNonneg b
+  | `((?a : Int) / ?b) => isNonneg a <&&> isNonneg b
+  | `((?a : Int) % _) => isNonneg a
+  | `((?a : Int) ^ (_ : Nat)) => isNonneg a
+  | `((NatCast.natCast _ : Int)) => return true
+  | _ => return false
 
 /-- Given `e : Int`, tries to construct a proof that `e ≥ 0` -/
 partial def mkNonnegThm? (e : Expr) : GoalM (Option Expr) := do

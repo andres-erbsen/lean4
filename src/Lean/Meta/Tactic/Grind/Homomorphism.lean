@@ -9,7 +9,7 @@ public import Lean.Meta.Tactic.Grind.Types
 public import Lean.Meta.Tactic.Grind.Homo
 public import Lean.Meta.Sym.Simp.SimpM
 import Init.Grind.Homo.Extra
-import Lean.Meta.NatInstTesters
+import Lean.Meta.ExprPatternCore
 import Lean.Meta.Sym.LitValues
 import Lean.Meta.Tactic.Grind.Diseq
 import Lean.Meta.Sym.Simp.Rewrite
@@ -106,9 +106,7 @@ theorems in `Init.Grind.Homo.Extra` are ground equalities between literals and
 closed arithmetic terms, discharged by `rfl`.
 -/
 private def andMaskSimproc : Sym.Simp.Simproc := fun e => do
-  let_expr HAnd.hAnd α _ _ inst a b := e | return .rfl
-  unless α.isConstOf ``Nat do return .rfl
-  unless (← Structural.isInstHAndNat inst) do return .rfl
+  let `((?a : Nat) &&& ?b) := e | return .rfl
   let (x, c, cVal, flipped) ←
     if let some cVal := (Sym.getNatValue? b).run then pure (a, b, cVal, false)
     else if let some cVal := (Sym.getNatValue? a).run then pure (b, a, cVal, true)
@@ -140,12 +138,8 @@ them the same image. The hypothesis of `Nat.mul_mod_eq_sub_mul_mod` is a ground 
 between literals, discharged by `rfl`.
 -/
 private def mulLargeCoeffSimproc : Sym.Simp.Simproc := fun e => do
-  let_expr HMod.hMod α _ _ instMod p mE := e | return .rfl
-  unless α.isConstOf ``Nat do return .rfl
-  unless (← Structural.isInstHModNat instMod) do return .rfl
+  let `(((?a : Nat) * ?b) % ?mE) := e | return .rfl
   let some m := Sym.getNatValue? mE | return .rfl
-  let_expr HMul.hMul _ _ _ instMul a b := p | return .rfl
-  unless (← Structural.isInstHMulNat instMul) do return .rfl
   let (x, cE, c, flipped) ←
     if let some c := Sym.getNatValue? a then pure (b, a, c, false)
     else if let some c := Sym.getNatValue? b then pure (a, b, c, true)

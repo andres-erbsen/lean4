@@ -18,7 +18,7 @@ import Lean.Meta.Tactic.Grind.Arith.Cutsat.Norm
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Util
 import Lean.Meta.Sym.Arith.EvalNum
 import Lean.Meta.Sym.Arith.Classify
-import Lean.Meta.NatInstTesters
+import Lean.Meta.ExprPatternCore
 import Init.Omega
 public section
 namespace Lean.Meta.Grind.Arith.Cutsat
@@ -220,16 +220,13 @@ where
       modify fun { k, cs, a?, n } => { a?, k, cs, n := n + 1 }
 
   go (e : Expr) : StateT PropagateMul.State GoalM Unit := do
-    let_expr HMul.hMul _ _ _ i a b := e | goVar e
-    if (← Structural.isInstHMulInt i) then
-      go a; go b
-    else
-      goVar e
+    match e with
+    | `((?a : Int) * ?b) => go a; go b
+    | _ => goVar e
 
 private def propagateNonlinearDiv (x : Var) : GoalM Bool := do
   let e ← getVar x
-  let_expr HDiv.hDiv _ _ _ i a b := e | return false
-  unless (← Structural.isInstHDivInt i) do return false
+  let `((?a : Int) / ?b) := e | return false
   let some (k, c) ← isExprEqConst? b | return false
   let c' ← if let some a ← getIntValue? a then
     pure { p := .add 1 x (.num (-(a/k))), h := .div k none c : EqCnstr }
@@ -243,8 +240,7 @@ private def propagateNonlinearDiv (x : Var) : GoalM Bool := do
 
 private def propagateNonlinearMod (x : Var) : GoalM Bool := do
   let e ← getVar x
-  let_expr HMod.hMod _ _ _ i a b := e | return false
-  unless (← Structural.isInstHModInt i) do return false
+  let `((?a : Int) % ?b) := e | return false
   let some (k, c) ← isExprEqConst? b | return false
   let c' ← if let some a ← getIntValue? a then
     pure { p := .add 1 x (.num (-(a%k))), h := .mod k none c : EqCnstr }
@@ -258,8 +254,7 @@ private def propagateNonlinearMod (x : Var) : GoalM Bool := do
 
 private def propagateNonlinearPow (x : Var) : GoalM Bool := do
   let e ← getVar x
-  let_expr HPow.hPow _ _ _ i a b := e | return false
-  unless (← Structural.isInstHPowInt i) do return false
+  let `((?a : Int) ^ (?b : Nat)) := e | return false
   let (ka, ca?) ← if let some ka ← getIntValue? a then
     pure (ka, none)
   else if let some (ka, ca) ← isExprEqConst? a then
@@ -683,21 +678,18 @@ private def expandDivMod (a : Expr) (b : Int) : GoalM Unit := do
       pushDivModFact h₃ gen
 
 private def propagateDiv (e : Expr) : GoalM Unit := do
-  let_expr HDiv.hDiv _ _ _ inst a b ← e | return ()
-  if (← Structural.isInstHDivInt inst) then
-    if let some b ← getIntValue? b then
-      expandDivMod a b
-    else
-      discard <| mkVar e
-
+  let `((?a : Int) / ?b) := e | return ()
+  if let some b ← getIntValue? b then
+    expandDivMod a b
+  else
+    discard <| mkVar e
 
 private def propagateMod (e : Expr) : GoalM Unit := do
-  let_expr HMod.hMod _ _ _ inst a b ← e | return ()
-  if (← Structural.isInstHModInt inst) then
-    if let some b ← getIntValue? b then
-      expandDivMod a b
-    else
-      discard <| mkVar e
+  let `((?a : Int) % ?b) := e | return ()
+  if let some b ← getIntValue? b then
+    expandDivMod a b
+  else
+    discard <| mkVar e
 
 private def propagateNatAbs (e : Expr) : GoalM Unit := do
   let_expr Int.natAbs a := e | return ()
@@ -716,8 +708,7 @@ private def internalizeIntTerm (e type : Expr) (parent? : Option Expr) (k : Supp
   | _ => internalizeInt e
 
 private def propagateNatSub (e : Expr) : GoalM Unit := do
-  let_expr HSub.hSub _ _ _ inst a b := e | return ()
-  unless (← Structural.isInstHSubNat inst) do return ()
+  let `((?a : Nat) - ?b) := e | return ()
   discard <| mkNatVar a
   discard <| mkNatVar b
   pushNewFact <| mkApp2 (mkConst ``Int.Internal.Linear.natCast_sub) a b

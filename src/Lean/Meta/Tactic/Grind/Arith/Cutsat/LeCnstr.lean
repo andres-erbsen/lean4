@@ -13,6 +13,7 @@ import Lean.Meta.Tactic.Grind.Arith.Cutsat.Proof
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Nat
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Norm
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.CommRing
+import Lean.Meta.ExprPatternCore
 public section
 namespace Lean.Meta.Grind.Arith.Cutsat
 
@@ -141,8 +142,7 @@ The `grind` preprocessor normalizes inequalities to `a ≤ 0` with `a` in normal
 `toPoly?`). Inequalities in dependent positions may not be normalized, and we normalize them here.
 -/
 def propagateIntLe (e : Expr) (eqTrue : Bool) : GoalM Unit := do
-  let_expr LE.le _ inst a b ← e | return ()
-  unless (← Structural.isInstLEInt inst) do return ()
+  let `((?a : Int) ≤ ?b) := e | return ()
   if let some 0 ← getIntValue? b then
     if let some p ← toPoly? a then
       trace[grind.debug.lia.norm] "normalized: {e}"

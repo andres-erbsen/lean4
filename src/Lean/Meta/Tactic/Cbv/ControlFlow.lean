@@ -23,6 +23,7 @@ import Lean.Meta.Tactic.Cbv.CbvEvalExt
 import Lean.Compiler.NoncomputableAttr
 import Init.CbvSimproc
 import Lean.Meta.Tactic.Cbv.CbvSimproc
+import Lean.Meta.ExprPatternCore
 
 /-!
 # Control Flow Handling for Cbv
@@ -86,27 +87,28 @@ def rewriteDecidableInstance (inst : Expr) : SimpM (Result × Expr) :=
       return (.step (← betaRevS p revArgs) proof done cd, mkAppRev fn revArgs)
 
 /-- Reduce `ite` by matching the `Decidable` instance for `isTrue`/`isFalse`. -/
-def matchIteDecidable (f α c inst a b instToMatch : Expr) (fallback : SimpM Result) : SimpM Result := do
-  match_expr instToMatch with
-  | Decidable.intro _ bool hp =>
-    match_expr bool with
-    | Bool.true =>
-      return .step a <| mkApp6 (mkConst ``Sym.ite_true f.constLevels!) α c inst a b hp
-    | Bool.false =>
-      return .step b <| mkApp6 (mkConst ``Sym.ite_false f.constLevels!) α c inst a b hp
-    | _ => fallback
+def matchIteDecidable (f α c inst a b instToMatch : Expr) (fallback : SimpM Result) :
+    SimpM Result := do
+  match instToMatch with
+  | `(@Decidable.intro _ true ?hp) =>
+    return .step a <| mkApp6 (mkConst ``Sym.ite_true f.constLevels!) α c inst a b hp
+  | `(@Decidable.intro _ false ?hp) =>
+    return .step b <| mkApp6 (mkConst ``Sym.ite_false f.constLevels!) α c inst a b hp
   | _ => fallback
 
-/-- Like `matchIteDecidable`, but for the congruence case where `c` was simplified to `c'` with proof `h`. -/
-def matchIteDecidableCongr (f α c inst a b c' h inst' : Expr) (fallback : SimpM Result) : SimpM Result := do
-  match_expr inst' with
-  | Decidable.intro _ bool hp =>
-    match_expr bool with
-    | Bool.true =>
-        return .step a <| mkApp8 (mkConst ``Sym.ite_true_congr f.constLevels!) α c inst a b c' h hp
-    | Bool.false =>
-      return .step b <| mkApp8 (mkConst ``Sym.ite_false_congr f.constLevels!) α c inst a b c' h hp
-    | _ => fallback
+/--
+Like `matchIteDecidable`, but for the congruence case where `c` was simplified to `c'` with
+proof `h`.
+-/
+def matchIteDecidableCongr (f α c inst a b c' h inst' : Expr) (fallback : SimpM Result) :
+    SimpM Result := do
+  match inst' with
+  | `(@Decidable.intro _ true ?hp) =>
+    return .step a <|
+      mkApp8 (mkConst ``Sym.ite_true_congr f.constLevels!) α c inst a b c' h hp
+  | `(@Decidable.intro _ false ?hp) =>
+    return .step b <|
+      mkApp8 (mkConst ``Sym.ite_false_congr f.constLevels!) α c inst a b c' h hp
   | _ => fallback
 
 /-- Simplify the `Decidable` instance, then try `simpIteDecidable`. -/
@@ -196,33 +198,34 @@ builtin_cbv_simproc ↓ simpIteCbv (@ite _ _ _ _ _) := fun e => do
             return .step e' h' (done := true) (contextDependent := cd)
 
 /-- Reduce `dite` by matching the `Decidable` instance for `isTrue`/`isFalse`. -/
-def matchDIteDecidable (f α c inst a b instToMatch : Expr) (fallback : SimpM Result) : SimpM Result := do
-  match_expr instToMatch with
-  | Decidable.intro _ bool hp =>
-    match_expr bool with
-    | Bool.true =>
-      let a' ← share <| a.betaRev #[hp]
-      return .step a' <| mkApp6 (mkConst ``Sym.dite_true f.constLevels!) α c inst a b hp
-    | Bool.false =>
-      let b' ← share <| b.betaRev #[hp]
-      return .step b' <| mkApp6 (mkConst ``Sym.dite_false f.constLevels!) α c inst a b hp
-    | _ => fallback
+def matchDIteDecidable (f α c inst a b instToMatch : Expr) (fallback : SimpM Result) :
+    SimpM Result := do
+  match instToMatch with
+  | `(@Decidable.intro _ true ?hp) =>
+    let a' ← share <| a.betaRev #[hp]
+    return .step a' <| mkApp6 (mkConst ``Sym.dite_true f.constLevels!) α c inst a b hp
+  | `(@Decidable.intro _ false ?hp) =>
+    let b' ← share <| b.betaRev #[hp]
+    return .step b' <| mkApp6 (mkConst ``Sym.dite_false f.constLevels!) α c inst a b hp
   | _ => fallback
 
-/-- Like `matchDIteDecidable`, but for the congruence case where `c` was simplified to `c'` with proof `h`. -/
-def matchDIteDecidableCongr (f α c inst a b c' h inst' : Expr) (fallback : SimpM Result) : SimpM Result := do
-  match_expr inst' with
-  | Decidable.intro _ bool hp =>
-    match_expr bool with
-    | Bool.true =>
-      let hp' := mkApp4 (mkConst ``Eq.mpr_prop) c c' h hp
-      let a' ← share <| a.betaRev #[hp']
-      return .step a' <| mkApp8 (mkConst ``Sym.dite_true_congr f.constLevels!) α c inst a b c' h hp
-    | Bool.false =>
-      let hnp' := mkApp4 (mkConst ``Eq.mpr_not) c c' h hp
-      let b' ← share <| b.betaRev #[hnp']
-      return .step b' <| mkApp8 (mkConst ``Sym.dite_false_congr f.constLevels!) α c inst a b c' h hp
-    | _ => fallback
+/--
+Like `matchDIteDecidable`, but for the congruence case where `c` was simplified to `c'` with
+proof `h`.
+-/
+def matchDIteDecidableCongr (f α c inst a b c' h inst' : Expr) (fallback : SimpM Result) :
+    SimpM Result := do
+  match inst' with
+  | `(@Decidable.intro _ true ?hp) =>
+    let hp' := mkApp4 (mkConst ``Eq.mpr_prop) c c' h hp
+    let a' ← share <| a.betaRev #[hp']
+    return .step a' <|
+      mkApp8 (mkConst ``Sym.dite_true_congr f.constLevels!) α c inst a b c' h hp
+  | `(@Decidable.intro _ false ?hp) =>
+    let hnp' := mkApp4 (mkConst ``Eq.mpr_not) c c' h hp
+    let b' ← share <| b.betaRev #[hnp']
+    return .step b' <|
+      mkApp8 (mkConst ``Sym.dite_false_congr f.constLevels!) α c inst a b c' h hp
   | _ => fallback
 
 /-- Simplify the `Decidable` instance, then try `simpDIteDecidable`. -/
@@ -329,27 +332,25 @@ builtin_cbv_simproc ↓ simpDIteCbv (@dite _ _ _ _ _) := fun e => do
             return .step e' h' (done := true) (contextDependent := cd)
 
 /-- Reduce `decide` by matching the `Decidable` instance for `isTrue`/`isFalse`. -/
-def matchDecideDecidable (p inst instToMatch : Expr) (fallback : SimpM Result) : SimpM Result := do
-  match_expr instToMatch with
-  | Decidable.intro _ bool hp =>
-    match_expr bool with
-    | Bool.true =>
-      return .step (← getBoolTrueExpr) <| mkApp3 (mkConst ``Sym.decide_isTrue) p inst hp
-    | Bool.false =>
-      return .step (← getBoolFalseExpr) <| mkApp3 (mkConst ``Sym.decide_isFalse) p inst hp
-    | _ => fallback
+def matchDecideDecidable (p inst instToMatch : Expr) (fallback : SimpM Result) :
+    SimpM Result := do
+  match instToMatch with
+  | `(@Decidable.intro _ true ?hp) =>
+    return .step (← getBoolTrueExpr) <| mkApp3 (mkConst ``Sym.decide_isTrue) p inst hp
+  | `(@Decidable.intro _ false ?hp) =>
+    return .step (← getBoolFalseExpr) <| mkApp3 (mkConst ``Sym.decide_isFalse) p inst hp
   | _ => fallback
 
-/-- Like `simpDecideByInst`, but for the case where `p` was simplified to `p'` with proof `h`. -/
-def matchDecideDecidableCongr (p p' h inst inst' : Expr) (fallback : SimpM Result) : SimpM Result := do
-  match_expr inst' with
-  | Decidable.intro _ bool hp =>
-    match_expr bool with
-    | Bool.true =>
-      return .step (← getBoolTrueExpr) <| mkApp5 (mkConst ``Sym.decide_isTrue_congr) p p' h inst hp
-    | Bool.false =>
-      return .step (← getBoolFalseExpr) <| mkApp5 (mkConst ``Sym.decide_isFalse_congr) p p' h inst hp
-    | _ => fallback
+/-- Like `matchDecideDecidable`, but when `p` was simplified to `p'` with proof `h`. -/
+def matchDecideDecidableCongr (p p' h inst inst' : Expr) (fallback : SimpM Result) :
+    SimpM Result := do
+  match inst' with
+  | `(@Decidable.intro _ true ?hp) =>
+    return .step (← getBoolTrueExpr) <|
+      mkApp5 (mkConst ``Sym.decide_isTrue_congr) p p' h inst hp
+  | `(@Decidable.intro _ false ?hp) =>
+    return .step (← getBoolFalseExpr) <|
+      mkApp5 (mkConst ``Sym.decide_isFalse_congr) p p' h inst hp
   | _ => fallback
 
 /-- Simplify the `Decidable` instance, then try `simpDecideByInst`. -/

@@ -14,7 +14,7 @@ import Lean.Meta.Tactic.Grind.Arith.Cutsat.Nat
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Proof
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Norm
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.CommRing
-import Lean.Meta.NatInstTesters
+import Lean.Meta.ExprPatternCore
 public import Lean.Meta.Tactic.Grind.PropagatorAttr
 import Init.Data.Nat.Dvd
 public section
@@ -127,8 +127,7 @@ private def DvdCnstr.assertCore (c : DvdCnstr) : GoalM Unit := do
     c.assert
 
 def propagateIntDvd (e : Expr) : GoalM Unit := do
-  let_expr Dvd.dvd _ inst a b ← e | return ()
-  unless (← Structural.isInstDvdInt inst) do return ()
+  let `((?a : Int) ∣ ?b) := e | return ()
   let some d ← getIntValue? a
     | reportIssue! "non-linear divisibility constraint found{indentExpr e}"; return ()
   if (← isEqTrue e) then
@@ -139,8 +138,7 @@ def propagateIntDvd (e : Expr) : GoalM Unit := do
     pushNewFact <| mkApp4 (mkConst ``Int.Internal.Linear.of_not_dvd) a b eagerReflBoolTrue (mkOfEqFalseCore e (← mkEqFalseProof e))
 
 def propagateNatDvd (e : Expr) : GoalM Unit := do
-  let_expr Dvd.dvd _ inst d₀ a := e | return ()
-  unless (← Structural.isInstDvdNat inst) do return ()
+  let `((?d₀ : Nat) ∣ ?a) := e | return ()
   let some d ← getNatValue? d₀
     | reportIssue! "non-linear divisibility constraint found{indentExpr e}"; return ()
   if (← isEqTrue e) then

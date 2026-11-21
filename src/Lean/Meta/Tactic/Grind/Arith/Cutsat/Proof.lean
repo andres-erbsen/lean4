@@ -18,6 +18,7 @@ import Lean.Meta.Sym.Arith.VarRename
 import Lean.Meta.Sym.Arith.ToExpr
 import Init.Data.Nat.Order
 import Init.Data.Order.Lemmas
+import Lean.Meta.ExprPatternCore
 public section
 namespace Lean.Meta.Grind.Arith.Cutsat
 deriving instance Hashable for Int.Internal.Linear.Expr
@@ -373,8 +374,7 @@ where
       return .const k h
 
   go (e : Expr) : ProofM MulEqProof := do
-    let_expr HMul.hMul _ _ _ i a b := e | goVar e
-    if !(← Structural.isInstHMulInt i) then goVar e else
+    let `((?a : Int) * ?b) := e | goVar e
     let ha ← go a
     if let .const 0 h := ha then
       return .const 0 (mkApp3 (mkConst ``Int.Internal.Linear.mul_eq_zero_left) a b h)

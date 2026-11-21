@@ -12,6 +12,7 @@ public import Lean.Meta.Tactic.Refl
 public import Lean.Meta.Tactic.SolveByElim
 public import Lean.Meta.Tactic.TryThis
 public import Lean.Util.Heartbeats
+import Lean.Meta.ExprPatternCore
 
 public section
 
@@ -58,13 +59,13 @@ private def addImport (name : Name) (c : AsyncConstantInfo) :
   -- Only the signature is needed; this avoids blocking on async theorem bodies (lean4#13705).
   withNewMCtxDepth do withReducible do
     forallTelescopeReducing c.toConstantVal.type fun _ type => do
-      match type.getAppFnArgs with
-      | (``Eq, #[_, lhs, rhs])
-      | (``Iff, #[lhs, rhs]) => do
+      let pushSides (lhs rhs : Expr) := do
         let a := Array.mkEmpty 2
         let a := a.push (← InitEntry.fromExpr lhs (name, RwDirection.forward))
-        let a := a.push (← InitEntry.fromExpr rhs (name, RwDirection.backward))
-        pure a
+        return a.push (← InitEntry.fromExpr rhs (name, RwDirection.backward))
+      match type with
+      | `(?lhs = ?rhs) => pushSides lhs rhs
+      | `(?lhs ↔ ?rhs) => pushSides lhs rhs
       | _ => return #[]
 
 /-- Select `=` and `↔` local hypotheses. -/
@@ -75,9 +76,11 @@ def localHypotheses (except : List FVarId := []) : MetaM (Array (Expr × Bool ×
     if except.contains h.fvarId! then continue
     let (_, _, type) ← forallMetaTelescopeReducing (← inferType h)
     let type ← whnfR type
-    match type.getAppFnArgs with
-    | (``Eq, #[_, _, _])
-    | (``Iff, #[_, _]) => do
+    match type with
+    | `(_ = _) =>
+      result := result.push (h, false, forwardWeight)
+                    |>.push (h, true, backwardWeight)
+    | `(_ ↔ _) =>
       result := result.push (h, false, forwardWeight)
                     |>.push (h, true, backwardWeight)
     | _ => pure ()

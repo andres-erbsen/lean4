@@ -8,6 +8,7 @@ prelude
 public import Lean.Meta.Tactic.Grind.Arith.Cutsat.Types
 import Lean.Meta.Tactic.Grind.Arith.Cutsat.Nat
 import Lean.Meta.IntInstTesters
+import Lean.Meta.ExprPatternCore
 public section
 namespace Lean.Meta.Grind.Arith.Cutsat
 
@@ -26,13 +27,11 @@ opaque reactivateVar (x : Var) : GoalM Unit
 open Structural
 
 private def isNonlinearTerm (e : Expr) : MetaM Bool := do
-  match_expr e with
-  | HMul.hMul _ _ _ i _ _ => isInstHMulInt i
-  | HDiv.hDiv _ _ _ i _ b => notM (isIntValue b) <&&> isInstHDivInt i
-  | HMod.hMod _ _ _ i _ b => notM (isIntValue b) <&&> isInstHModInt i
-  | HPow.hPow _ _ _ i a b =>
-    unless (← isInstHPowInt i) do return false
-    notM (isIntValue a) <||> notM (isIntValue b)
+  match e with
+  | `((_ : Int) * _) => return true
+  | `((_ : Int) / ?b) => notM (isIntValue b)
+  | `((_ : Int) % ?b) => notM (isIntValue b)
+  | `((?a : Int) ^ (?b : Nat)) => notM (isIntValue a) <||> notM (isIntValue b)
   | _ => return false
 
 private def registerNonlinearOcc (arg : Expr) (x : Var) : GoalM Unit := do
@@ -60,12 +59,8 @@ private partial def registerNonlinearOccsAt (e : Expr) (x : Var) : GoalM Unit :=
   | _ => return ()
 where
   go (e : Expr) : GoalM Unit := do
-    match_expr e with
-    | HMul.hMul _ _ _ i a b =>
-      if (← isInstHMulInt i) then
-        go a; go b
-      else
-        registerNonlinearOcc e x
+    match e with
+    | `((?a : Int) * ?b) => go a; go b
     | _ => registerNonlinearOcc e x
 
 /-- Asserts the facts about the new variable `x` whose denotation is `e`. -/
@@ -154,14 +149,12 @@ Returns `true` if `toLinearExpr` decomposes `e`: `e` is a numeral, `-a`, `a + b`
 `k * a`, or `a * k` for a numeral `k`.
 -/
 private def isLinearArith (e : Expr) : GoalM Bool := do
-  match_expr e with
-  | OfNat.ofNat _ _ _ => isIntValue e
-  | Neg.neg _ i _ => isInstNegInt i
-  | HAdd.hAdd _ _ _ i _ _ => isInstHAddInt i
-  | HSub.hSub _ _ _ i _ _ => isInstHSubInt i
-  | HMul.hMul _ _ _ i a b =>
-    unless (← isInstHMulInt i) do return false
-    isIntValue a <||> isIntValue b
+  match e with
+  | `((@OfNat.ofNat _ _ _ : Int)) => isIntValue e
+  | `(- (_ : Int)) => return true
+  | `((_ : Int) + _) => return true
+  | `((_ : Int) - _) => return true
+  | `((?a : Int) * ?b) => isIntValue a <||> isIntValue b
   | _ => return false
 
 /--
