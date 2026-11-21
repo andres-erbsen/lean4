@@ -11,6 +11,7 @@ import Lean.Meta.Injective -- for elimOptParam
 import Lean.Elab.PreDefinition.PartialFixpoint.Eqns
 import Init.Internal.Order.Basic
 import Lean.Meta.PProdN
+import Lean.Meta.ExprPatternCore
 
 namespace Lean.Elab.PartialFixpoint
 
@@ -136,26 +137,15 @@ def mkIsMeetProof (predTypes predVars wComponents fInsts : Array Expr)
           ``ImplicationOrder.is_meet_and
       let mut proof := mkApp2 (mkConst leafLemma) (mkAppN predVars[i]! ts) (fInsts[i]!.beta ts)
       for t in ts.reverse do
-        let ty ← inferType proof
-        let_expr is_meet σ inst a b w := ty
-          | throwError "mkIsMeetProof: unexpected proof type{indentExpr ty}"
-        proof ← mkAppOptM ``is_meet_pi #[← inferType t,
-          ← mkLambdaFVars #[t] σ, ← mkLambdaFVars #[t] inst, ← mkLambdaFVars #[t] a,
-          ← mkLambdaFVars #[t] b, ← mkLambdaFVars #[t] w, ← mkLambdaFVars #[t] proof]
+        proof ← `(expr| is_meet_pi $(← mkLambdaFVars #[t] proof))
       return proof
   let mut proof := componentProofs.back!
   for j in (Array.range (predTypes.size - 1)).reverse do
-    let ty₂ ← inferType proof
-    let_expr is_meet σ₂ inst₂ _ _ _ := ty₂
-      | throwError "mkIsMeetProof: unexpected proof type{indentExpr ty₂}"
-    let ty₁ ← inferType componentProofs[j]!
-    let_expr is_meet σ₁ inst₁ _ _ _ := ty₁
-      | throwError "mkIsMeetProof: unexpected proof type{indentExpr ty₁}"
     let subX ← PProdN.mk 0 predVars[j:].toArray
     let subY ← PProdN.mk 0 fInsts[j:].toArray
     let subW ← PProdN.mk 0 wComponents[j:].toArray
-    proof ← mkAppOptM ``is_meet_pprod
-      #[σ₁, σ₂, inst₁, inst₂, subX, subY, subW, componentProofs[j]!, proof]
+    proof ← `(expr| is_meet_pprod (x := $subX) (y := $subY) (w := $subW)
+      $(componentProofs[j]!) $proof)
   return proof
 
 def deriveInduction (name : Name) (isMutual : Bool) (strong : Bool := false) : MetaM Unit := do
