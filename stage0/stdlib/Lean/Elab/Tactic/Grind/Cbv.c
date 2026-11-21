@@ -18,9 +18,9 @@ lean_object* l_Lean_Name_num___override(lean_object*, lean_object*);
 lean_object* l_Lean_Meta_Tactic_Cbv_cbvGoalCore(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_Name_mkStr5(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_Elab_Tactic_Grind_ensureSym___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
-lean_object* l_Lean_Elab_Tactic_Grind_getMainGoal___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
+lean_object* l_Lean_Elab_Tactic_Grind_getMainGoal(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_Elab_Tactic_Grind_liftGrindM___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
-lean_object* l_Lean_Elab_Tactic_Grind_replaceMainGoal___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
+lean_object* l_Lean_Elab_Tactic_Grind_replaceMainGoal(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_Elab_Tactic_Grind_withMainContext___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 extern lean_object* l_Lean_Elab_Tactic_Grind_grindTacElabAttribute;
 lean_object* l_Lean_KeyedDeclsAttribute_addBuiltin___redArg(lean_object*, lean_object*, lean_object*, lean_object*);
@@ -118,7 +118,7 @@ if (lean_obj_tag(v___x_34_) == 0)
 {
 lean_object* v___x_35_; 
 lean_dec_ref_known(v___x_34_, 1);
-v___x_35_ = l_Lean_Elab_Tactic_Grind_getMainGoal___redArg(v___y_26_, v___y_29_, v___y_30_, v___y_31_, v___y_32_);
+v___x_35_ = l_Lean_Elab_Tactic_Grind_getMainGoal(v___y_25_, v___y_26_, v___y_27_, v___y_28_, v___y_29_, v___y_30_, v___y_31_, v___y_32_);
 if (lean_obj_tag(v___x_35_) == 0)
 {
 lean_object* v_a_36_; lean_object* v_toGoalState_37_; lean_object* v_mvarId_38_; lean_object* v___x_40_; uint8_t v_isShared_41_; uint8_t v_isSharedCheck_62_; 
@@ -161,7 +161,7 @@ lean_object* v___x_45_; lean_object* v___x_46_;
 lean_del_object(v___x_40_);
 lean_dec_ref(v_toGoalState_37_);
 v___x_45_ = lean_box(0);
-v___x_46_ = l_Lean_Elab_Tactic_Grind_replaceMainGoal___redArg(v___x_45_, v___y_26_, v___y_29_, v___y_30_, v___y_31_, v___y_32_);
+v___x_46_ = l_Lean_Elab_Tactic_Grind_replaceMainGoal(v___x_45_, v___y_25_, v___y_26_, v___y_27_, v___y_28_, v___y_29_, v___y_30_, v___y_31_, v___y_32_);
 return v___x_46_;
 }
 else
@@ -192,7 +192,7 @@ v___x_50_ = lean_box(0);
 v___x_51_ = lean_alloc_ctor(1, 2, 0);
 lean_ctor_set(v___x_51_, 0, v___x_49_);
 lean_ctor_set(v___x_51_, 1, v___x_50_);
-v___x_52_ = l_Lean_Elab_Tactic_Grind_replaceMainGoal___redArg(v___x_51_, v___y_26_, v___y_29_, v___y_30_, v___y_31_, v___y_32_);
+v___x_52_ = l_Lean_Elab_Tactic_Grind_replaceMainGoal(v___x_51_, v___y_25_, v___y_26_, v___y_27_, v___y_28_, v___y_29_, v___y_30_, v___y_31_, v___y_32_);
 return v___x_52_;
 }
 }

@@ -179,10 +179,10 @@ lean_object* l_Lean_Meta_Grind_Theorems_erase___redArg(lean_object*, lean_object
 uint8_t l_Lean_wasOriginallyTheorem(lean_object*, lean_object*);
 lean_object* l_Lean_Meta_getEqnsFor_x3f(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_Meta_Grind_assertExtra___boxed(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
-lean_object* l_Lean_Elab_Tactic_Grind_liftGoalM___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
-lean_object* l_Lean_Elab_Tactic_Grind_getMainGoal___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
+lean_object* l_Lean_Elab_Tactic_Grind_liftGoalM___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
+lean_object* l_Lean_Elab_Tactic_Grind_getMainGoal(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_Elab_Tactic_Grind_liftGrindM___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
-lean_object* l_Lean_Elab_Tactic_Grind_replaceMainGoal___redArg(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
+lean_object* l_Lean_Elab_Tactic_Grind_replaceMainGoal(lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_realizeGlobalConstNoOverload(lean_object*, lean_object*, lean_object*);
 lean_object* l_Lean_Meta_Grind_isCasesAttrCandidate(lean_object*, uint8_t, lean_object*, lean_object*);
 lean_object* l_Lean_Parser_runParserCategory(lean_object*, lean_object*, lean_object*, lean_object*);
@@ -23480,7 +23480,7 @@ v___jp_7439_:
 lean_object* v___x_7449_; lean_object* v___x_7450_; 
 v___x_7449_ = lean_alloc_closure((void*)(l_Lean_Meta_Grind_assertExtra___boxed), 12, 1);
 lean_closure_set(v___x_7449_, 0, v___y_7440_);
-v___x_7450_ = l_Lean_Elab_Tactic_Grind_liftGoalM___redArg(v___x_7449_, v___y_7441_, v___y_7442_, v___y_7445_, v___y_7446_, v___y_7447_, v___y_7448_);
+v___x_7450_ = l_Lean_Elab_Tactic_Grind_liftGoalM___redArg(v___x_7449_, v___y_7441_, v___y_7442_, v___y_7443_, v___y_7444_, v___y_7445_, v___y_7446_, v___y_7447_, v___y_7448_);
 if (lean_obj_tag(v___x_7450_) == 0)
 {
 lean_object* v___x_7451_; 
@@ -23627,7 +23627,7 @@ goto v___jp_7439_;
 else
 {
 lean_object* v___x_7498_; 
-v___x_7498_ = l_Lean_Elab_Tactic_Grind_getMainGoal___redArg(v___y_7465_, v___y_7468_, v___y_7469_, v___y_7470_, v___y_7471_);
+v___x_7498_ = l_Lean_Elab_Tactic_Grind_getMainGoal(v___x_7497_, v___y_7465_, v___y_7466_, v___y_7467_, v___y_7468_, v___y_7469_, v___y_7470_, v___y_7471_);
 if (lean_obj_tag(v___x_7498_) == 0)
 {
 lean_object* v_a_7499_; lean_object* v_toGoalState_7500_; lean_object* v_ematch_7501_; lean_object* v_mvarId_7502_; lean_object* v___x_7504_; uint8_t v_isShared_7505_; uint8_t v_isSharedCheck_7563_; 
@@ -23785,7 +23785,7 @@ goto v_reusejp_7543_;
 v_reusejp_7543_:
 {
 lean_object* v___x_7545_; 
-v___x_7545_ = l_Lean_Elab_Tactic_Grind_replaceMainGoal___redArg(v___x_7544_, v___y_7465_, v___y_7468_, v___y_7469_, v___y_7470_, v___y_7471_);
+v___x_7545_ = l_Lean_Elab_Tactic_Grind_replaceMainGoal(v___x_7544_, v___x_7497_, v___y_7465_, v___y_7466_, v___y_7467_, v___y_7468_, v___y_7469_, v___y_7470_, v___y_7471_);
 if (lean_obj_tag(v___x_7545_) == 0)
 {
 lean_dec_ref_known(v___x_7545_, 1);
