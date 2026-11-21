@@ -3906,6 +3906,84 @@ def ExprPattern.matchIndexedOrElse {m : Type → Type v} [Monad m] [MonadLiftT M
   let cands ← (matchIndexedCandidates siteId pats rel scrutinee : MetaM (Array Nat))
   dispatchCandidates cands scrutinee tryAt onFail
 
+namespace ExprPattern.Internal
+
+@[inline]
+def levelEqNorm (patLvl actualLvl : Level) : Bool :=
+  patLvl == actualLvl || patLvl == actualLvl.normalize
+
+private def levelListEqNorm : List Level → List Level → Bool
+  | [], [] => true
+  | u :: us, v :: vs => levelEqNorm u v && levelListEqNorm us vs
+  | _, _ => false
+
+/--
+Fallback structural equality for closed ground pattern subterms when fast pointer/hash equality
+returns `false` (handles `Expr.mdata` anywhere in `e` and unnormalized `Level` expressions).
+-/
+def eqClosedGroundSlow : Expr → Expr → Bool
+  | .mdata _ a, e => eqClosedGroundSlow a e
+  | pe, .mdata _ b => eqClosedGroundSlow pe b
+  | .bvar i₁, .bvar i₂ => i₁ == i₂
+  | .app f₁ a₁, .app f₂ a₂ =>
+    (f₁ == f₂ || eqClosedGroundSlow f₁ f₂) && (a₁ == a₂ || eqClosedGroundSlow a₁ a₂)
+  | .const c₁ us₁, .const c₂ us₂ =>
+    c₁ == c₂ && levelListEqNorm us₁ us₂
+  | .sort u₁, .sort u₂ => levelEqNorm u₁ u₂
+  | .lit l₁, .lit l₂ => l₁ == l₂
+  | .proj s₁ i₁ b₁, .proj s₂ i₂ b₂ =>
+    s₁ == s₂ && i₁ == i₂ && (b₁ == b₂ || eqClosedGroundSlow b₁ b₂)
+  | .fvar f₁, .fvar f₂ => f₁ == f₂
+  | _, _ => false
+termination_by pe e => sizeOf pe + sizeOf e
+
+/-- Fast syntactic equality for closed ground pattern nodes (modulo `mdata` and level norm). -/
+@[inline]
+def eqClosedGround (pe e : Expr) : Bool :=
+  pe == e || eqClosedGroundSlow pe e
+
+/-- Match `.const declName us` against a list of fixed levels (`some l`) or wildcards (`none`). -/
+def matchConstLevelsMask (e : Expr) (declName : Name) (mask : List (Option Level)) : Bool :=
+  match e with
+  | .const c us => c == declName && go mask us
+  | _ => false
+where
+  go : List (Option Level) → List Level → Bool
+    | [], [] => true
+    | none :: ms, _ :: us => go ms us
+    | some l :: ms, u :: us => levelEqNorm l u && go ms us
+    | _, _ => false
+
+/-- Match `.proj structName idx _` directly on an `mdata`-stripped expression. -/
+@[inline]
+def isProjOf (e : Expr) (structName : Name) (idx : Nat) : Bool :=
+  match e with
+  | .proj s i _ => s == structName && i == idx
+  | _ => false
+
+/-- Return `true` when inline `/structural` matching must yield to the full `MetaM` engine. -/
+@[inline]
+def shouldUseSlowStructural (checkIdx : Bool) : MetaM Bool := do
+  if ← isTracingEnabledFor `Meta.Match.expr then
+    return true
+  return checkIdx && exprQuot.debug.checkIndex.get (← getOptions)
+
+end ExprPattern.Internal
+
+/--
+Guard deciding between inline zero-allocation `/structural` matching and the general runtime engine
+(which handles `hasMVar`, `trace.Meta.Match.expr`, and `exprQuot.debug.checkIndex`).
+-/
+@[inline]
+def ExprPattern.fastStructuralGuardOrElse {m : Type → Type v} [Monad m] [MonadLiftT MetaM m]
+    {α : Type} (checkIdx : Bool) (scrutinee : Expr)
+    (onFast : Unit → m α) (onSlow : Unit → m α) : m α := do
+  if !scrutinee.hasMVar &&
+      !(← (ExprPattern.Internal.shouldUseSlowStructural checkIdx : MetaM Bool)) then
+    onFast ()
+  else
+    onSlow ()
+
 /--
 Compute the `DiscrTree` key path that `p` produces under non-`/sym` relation `rel`, or `none`
 if `rel` is not index-sound or uses `/sym`. Intended for diagnostics such as `#check_pattern`.

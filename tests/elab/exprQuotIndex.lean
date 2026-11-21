@@ -41,27 +41,27 @@ opaque pCarry {P : Prop} (h : P) (x : Nat) : Nat
 
 private def structMatch (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| ?a + $a)            => let _ := a; return 1
-  | `(expr| ?a + ?b)            => let _ := (a, b); return 2
-  | `(expr| Nat.succ ?n)        => let _ := n; return 3
-  | `(expr| ?α → ?β)            => let _ := (α, β); return 4
-  | `(expr| (?p : Nat × Nat).1) => let _ := p; return 5
-  | `(expr| fTag ?x)            => let _ := x; return 6
-  | `(expr| pCarry _ ?x)        => let _ := x; return 7
-  | `(expr| ?f 0)               => let _ := f; return 8
-  | `(expr| fun x => ?b)        => let _ := b; return 9
+  | `(?a + $a)            => let _ := a; return 1
+  | `(?a + ?b)            => let _ := (a, b); return 2
+  | `(Nat.succ ?n)        => let _ := n; return 3
+  | `(?α → ?β)            => let _ := (α, β); return 4
+  | `((?p : Nat × Nat).1) => let _ := p; return 5
+  | `(fTag ?x)            => let _ := x; return 6
+  | `(pCarry _ ?x)        => let _ := x; return 7
+  | `(?f 0)               => let _ := f; return 8
+  | `(fun x => ?b)        => let _ := b; return 9
   | _                           => return 0
 
 private def structOracle (e : Expr) : MetaM Nat := do
-  match e with | `(expr| ?a + $a) => let _ := a; return 1 | _ => pure ()
-  match e with | `(expr| ?a + ?b) => let _ := (a, b); return 2 | _ => pure ()
-  match e with | `(expr| Nat.succ ?n) => let _ := n; return 3 | _ => pure ()
-  match e with | `(expr| ?α → ?β) => let _ := (α, β); return 4 | _ => pure ()
-  match e with | `(expr| (?p : Nat × Nat).1) => let _ := p; return 5 | _ => pure ()
-  match e with | `(expr| fTag ?x) => let _ := x; return 6 | _ => pure ()
-  match e with | `(expr| pCarry _ ?x) => let _ := x; return 7 | _ => pure ()
-  match e with | `(expr| ?f 0) => let _ := f; return 8 | _ => pure ()
-  match e with | `(expr| fun x => ?b) => let _ := b; return 9 | _ => pure ()
+  match e with | `(?a + $a) => let _ := a; return 1 | _ => pure ()
+  match e with | `(?a + ?b) => let _ := (a, b); return 2 | _ => pure ()
+  match e with | `(Nat.succ ?n) => let _ := n; return 3 | _ => pure ()
+  match e with | `(?α → ?β) => let _ := (α, β); return 4 | _ => pure ()
+  match e with | `((?p : Nat × Nat).1) => let _ := p; return 5 | _ => pure ()
+  match e with | `(fTag ?x) => let _ := x; return 6 | _ => pure ()
+  match e with | `(pCarry _ ?x) => let _ := x; return 7 | _ => pure ()
+  match e with | `(?f 0) => let _ := f; return 8 | _ => pure ()
+  match e with | `(fun x => ?b) => let _ := b; return 9 | _ => pure ()
   return 0
 
 /-- info: [1, 2, 3, 4, 5, 6, 7, 8, 9] -/
@@ -308,9 +308,9 @@ run_meta do
   let p ← `(expr| 10)
   let dispatchWithPin (e : Expr) : MetaM Nat :=
     match e with
-    | `(expr| $p + ?y) => do countRef.modify (· + 1); let _ := y; return 1
-    | `(expr| ?a + ?b) => do countRef.modify (· + 1); let _ := (a, b); return 2
-    | `(expr| _ + _)   => do countRef.modify (· + 1); return 3
+    | `($p + ?y) => do countRef.modify (· + 1); let _ := y; return 1
+    | `(?a + ?b) => do countRef.modify (· + 1); let _ := (a, b); return 2
+    | `(_ + _)   => do countRef.modify (· + 1); return 3
     | _                => return 0
   let pinRes ← dispatchWithPin (← `(expr| 10 + 20))
   logInfo m!"({pinRes}, {← countRef.get})"
@@ -326,8 +326,8 @@ run_meta do
   let mixedCols (flag : Nat) (e : Expr) : MetaM Nat :=
     match flag, e with
     | 0, _                => return 99
-    | _, `(expr| ?a + ?b) => let _ := (a, b); return 10
-    | _, `(expr| ?a * ?b) => let _ := (a, b); return 20
+    | _, `(?a + ?b) => let _ := (a, b); return 10
+    | _, `(?a * ?b) => let _ := (a, b); return 20
     | _, _                => return 0
   let mix0 ← mixedCols 0 (← `(expr| 1 + 2))
   let mix1 ← mixedCols 1 (← `(expr| 1 * 2))
@@ -374,56 +374,56 @@ opaque k9 : Nat → Nat
 
 private def bigDispatch50 (e : Expr) : MetaM Nat :=
   match e with
-  | `(expr| k0 (k0 ?x)) => let _ := x; return 1
-  | `(expr| k0 (k1 ?x)) => let _ := x; return 2
-  | `(expr| k0 (k2 ?x)) => let _ := x; return 3
-  | `(expr| k0 (k3 ?x)) => let _ := x; return 4
-  | `(expr| k0 (k4 ?x)) => let _ := x; return 5
-  | `(expr| k1 (k0 ?x)) => let _ := x; return 6
-  | `(expr| k1 (k1 ?x)) => let _ := x; return 7
-  | `(expr| k1 (k2 ?x)) => let _ := x; return 8
-  | `(expr| k1 (k3 ?x)) => let _ := x; return 9
-  | `(expr| k1 (k4 ?x)) => let _ := x; return 10
-  | `(expr| k2 (k0 ?x)) => let _ := x; return 11
-  | `(expr| k2 (k1 ?x)) => let _ := x; return 12
-  | `(expr| k2 (k2 ?x)) => let _ := x; return 13
-  | `(expr| k2 (k3 ?x)) => let _ := x; return 14
-  | `(expr| k2 (k4 ?x)) => let _ := x; return 15
-  | `(expr| k3 (k0 ?x)) => let _ := x; return 16
-  | `(expr| k3 (k1 ?x)) => let _ := x; return 17
-  | `(expr| k3 (k2 ?x)) => let _ := x; return 18
-  | `(expr| k3 (k3 ?x)) => let _ := x; return 19
-  | `(expr| k3 (k4 ?x)) => let _ := x; return 20
-  | `(expr| k4 (k0 ?x)) => let _ := x; return 21
-  | `(expr| k4 (k1 ?x)) => let _ := x; return 22
-  | `(expr| k4 (k2 ?x)) => let _ := x; return 23
-  | `(expr| k4 (k3 ?x)) => let _ := x; return 24
-  | `(expr| k4 (k4 ?x)) => let _ := x; return 25
-  | `(expr| k5 (k0 ?x)) => let _ := x; return 26
-  | `(expr| k5 (k1 ?x)) => let _ := x; return 27
-  | `(expr| k5 (k2 ?x)) => let _ := x; return 28
-  | `(expr| k5 (k3 ?x)) => let _ := x; return 29
-  | `(expr| k5 (k4 ?x)) => let _ := x; return 30
-  | `(expr| k6 (k0 ?x)) => let _ := x; return 31
-  | `(expr| k6 (k1 ?x)) => let _ := x; return 32
-  | `(expr| k6 (k2 ?x)) => let _ := x; return 33
-  | `(expr| k6 (k3 ?x)) => let _ := x; return 34
-  | `(expr| k6 (k4 ?x)) => let _ := x; return 35
-  | `(expr| k7 (k0 ?x)) => let _ := x; return 36
-  | `(expr| k7 (k1 ?x)) => let _ := x; return 37
-  | `(expr| k7 (k2 ?x)) => let _ := x; return 38
-  | `(expr| k7 (k3 ?x)) => let _ := x; return 39
-  | `(expr| k7 (k4 ?x)) => let _ := x; return 40
-  | `(expr| k8 (k0 ?x)) => let _ := x; return 41
-  | `(expr| k8 (k1 ?x)) => let _ := x; return 42
-  | `(expr| k8 (k2 ?x)) => let _ := x; return 43
-  | `(expr| k8 (k3 ?x)) => let _ := x; return 44
-  | `(expr| k8 (k4 ?x)) => let _ := x; return 45
-  | `(expr| k9 (k0 ?x)) => let _ := x; return 46
-  | `(expr| k9 (k1 ?x)) => let _ := x; return 47
-  | `(expr| k9 (k2 ?x)) => let _ := x; return 48
-  | `(expr| k9 (k3 ?x)) => let _ := x; return 49
-  | `(expr| k9 (k4 ?x)) => let _ := x; return 50
+  | `(k0 (k0 ?x)) => let _ := x; return 1
+  | `(k0 (k1 ?x)) => let _ := x; return 2
+  | `(k0 (k2 ?x)) => let _ := x; return 3
+  | `(k0 (k3 ?x)) => let _ := x; return 4
+  | `(k0 (k4 ?x)) => let _ := x; return 5
+  | `(k1 (k0 ?x)) => let _ := x; return 6
+  | `(k1 (k1 ?x)) => let _ := x; return 7
+  | `(k1 (k2 ?x)) => let _ := x; return 8
+  | `(k1 (k3 ?x)) => let _ := x; return 9
+  | `(k1 (k4 ?x)) => let _ := x; return 10
+  | `(k2 (k0 ?x)) => let _ := x; return 11
+  | `(k2 (k1 ?x)) => let _ := x; return 12
+  | `(k2 (k2 ?x)) => let _ := x; return 13
+  | `(k2 (k3 ?x)) => let _ := x; return 14
+  | `(k2 (k4 ?x)) => let _ := x; return 15
+  | `(k3 (k0 ?x)) => let _ := x; return 16
+  | `(k3 (k1 ?x)) => let _ := x; return 17
+  | `(k3 (k2 ?x)) => let _ := x; return 18
+  | `(k3 (k3 ?x)) => let _ := x; return 19
+  | `(k3 (k4 ?x)) => let _ := x; return 20
+  | `(k4 (k0 ?x)) => let _ := x; return 21
+  | `(k4 (k1 ?x)) => let _ := x; return 22
+  | `(k4 (k2 ?x)) => let _ := x; return 23
+  | `(k4 (k3 ?x)) => let _ := x; return 24
+  | `(k4 (k4 ?x)) => let _ := x; return 25
+  | `(k5 (k0 ?x)) => let _ := x; return 26
+  | `(k5 (k1 ?x)) => let _ := x; return 27
+  | `(k5 (k2 ?x)) => let _ := x; return 28
+  | `(k5 (k3 ?x)) => let _ := x; return 29
+  | `(k5 (k4 ?x)) => let _ := x; return 30
+  | `(k6 (k0 ?x)) => let _ := x; return 31
+  | `(k6 (k1 ?x)) => let _ := x; return 32
+  | `(k6 (k2 ?x)) => let _ := x; return 33
+  | `(k6 (k3 ?x)) => let _ := x; return 34
+  | `(k6 (k4 ?x)) => let _ := x; return 35
+  | `(k7 (k0 ?x)) => let _ := x; return 36
+  | `(k7 (k1 ?x)) => let _ := x; return 37
+  | `(k7 (k2 ?x)) => let _ := x; return 38
+  | `(k7 (k3 ?x)) => let _ := x; return 39
+  | `(k7 (k4 ?x)) => let _ := x; return 40
+  | `(k8 (k0 ?x)) => let _ := x; return 41
+  | `(k8 (k1 ?x)) => let _ := x; return 42
+  | `(k8 (k2 ?x)) => let _ := x; return 43
+  | `(k8 (k3 ?x)) => let _ := x; return 44
+  | `(k8 (k4 ?x)) => let _ := x; return 45
+  | `(k9 (k0 ?x)) => let _ := x; return 46
+  | `(k9 (k1 ?x)) => let _ := x; return 47
+  | `(k9 (k2 ?x)) => let _ := x; return 48
+  | `(k9 (k3 ?x)) => let _ := x; return 49
+  | `(k9 (k4 ?x)) => let _ := x; return 50
   | _                   => return 0
 
 /-- info: (50, 0) -/
@@ -444,9 +444,9 @@ opaque fTag : Nat → Nat
 
 private def deepSpineMatch (e : Expr) : MetaM (Option Expr) :=
   match e with
-  | `(expr| k0 ?x) => return some x
-  | `(expr| k1 ?x) => return some x
-  | `(expr| k2 ?x) => return some x
+  | `(k0 ?x) => return some x
+  | `(k1 ?x) => return some x
+  | `(k2 ?x) => return some x
   | _              => return none
 
 /-- info: (true, 0, true, 50, true) -/
@@ -515,5 +515,179 @@ run_meta do
   logInfo m!"({r0}, {r1}, {rMiss})"
 
 end ProgrammaticProj
+
+namespace InlineStructuralFastPath
+
+private def matchSingleMulMod (e : Expr) : MetaM (Option (Expr × Expr × Expr)) :=
+  match e with
+  | `(expr/structural| ((?a : Nat) * ?b) % ?mE) => return some (a, b, mE)
+  | _ => return none
+
+private def matchMultiArith (e : Expr) : MetaM String :=
+  match (modulo := structural) e with
+  | `((?a : Nat) + _) => return s!"nat_add:{!a.isMData}"
+  | `((?a : Nat) - _) => return s!"nat_sub:{!a.isMData}"
+  | `(((_ : Nat) * _) % _) => return "nat_mul_mod"
+  | `((?a : Nat) * _) => return s!"nat_mul:{!a.isMData}"
+  | `((@OfNat.ofNat _ _ _ : Nat)) => return "nat_ofNat"
+  | `((?a : Int) + _) => return s!"int_add:{!a.isMData}"
+  | `((?a : Int) * _) => return s!"int_mul:{!a.isMData}"
+  | `((@OfNat.ofNat _ _ _ : Int)) => return "int_ofNat"
+  | _ => return "miss"
+
+private def matchPolyEq (e : Expr) : MetaM String :=
+  match (modulo := structural) e with
+  | `((@Eq.{2} Type _ _)) => return "eq_type0"
+  | `((?lhs = ?rhs)) => return s!"eq:{!lhs.isMData}:{!rhs.isMData}"
+  | _ => return "miss"
+
+private inductive RawPair where
+  | mk (fst snd : Nat) : RawPair
+
+private class SameFin (x : Fin 5) where
+  u : Unit := ()
+
+private instance instSameFin (x : Fin 5) : SameFin x := {}
+
+private def tagFin (x : Fin 5) [SameFin x] : Nat := 0
+
+private theorem pf25a : 2 < 5 := by decide
+private theorem pf25b : 2 < 5 := by decide
+
+private def matchSingleTagFin (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(expr/structural| tagFin ?x) => return some x
+  | _ => return none
+
+private def matchIndexedTagFin (e : Expr) : MetaM String :=
+  match (modulo := structural) e with
+  | `(expr| tagFin _) => return "tagFin"
+  | `(expr| Nat.succ _) => return "succ"
+  | _ => return "miss"
+
+private def matchSingleIntOfNat (e : Expr) : MetaM Bool :=
+  match e with
+  | `(expr/structural| (@OfNat.ofNat _ _ _ : Int)) => return true
+  | _ => return false
+
+private def matchMixedNonConst (e : Expr) : MetaM String :=
+  match (modulo := structural) e with
+  | `(Prop) => return "prop"
+  | `((?p : RawPair).1) => return s!"fst:{!p.isMData}"
+  | `((?a : Nat) + _) => return s!"nat_add:{!a.isMData}"
+  | _ => return "miss"
+
+private def mkTypedOfNat (ty : Expr) (n : Nat) : MetaM Expr :=
+  mkAppOptM ``OfNat.ofNat #[some ty, some (mkRawNatLit n), none]
+
+private def runAllInlineChecks : MetaM Unit := do
+  let natTy := mkConst ``Nat
+  let intTy := mkConst ``Int
+  let n1 ← mkTypedOfNat natTy 1
+  let n2 ← mkTypedOfNat natTy 2
+  let n3 ← mkTypedOfNat natTy 3
+  let natMul ← mkAppM ``HMul.hMul #[n1, n2]
+  let natMulMod ← mkAppM ``HMod.hMod #[natMul, n3]
+  assert! (← matchSingleMulMod natMulMod) == some (n1, n2, n3)
+  assert! (← matchMultiArith natMulMod) == "nat_mul_mod"
+  let natAdd ← mkAppM ``HAdd.hAdd #[n1, n2]
+  let natSub ← mkAppM ``HSub.hSub #[n1, n2]
+  assert! (← matchMultiArith natAdd) == "nat_add:true"
+  assert! (← matchMultiArith natSub) == "nat_sub:true"
+  assert! (← matchMultiArith natMul) == "nat_mul:true"
+  assert! (← matchMultiArith n1) == "nat_ofNat"
+  let i1 ← mkTypedOfNat intTy 1
+  let i2 ← mkTypedOfNat intTy 2
+  assert! (← matchMultiArith (← mkAppM ``HAdd.hAdd #[i1, i2])) == "int_add:true"
+  assert! (← matchMultiArith (← mkAppM ``HMul.hMul #[i1, i2])) == "int_mul:true"
+  assert! (← matchMultiArith i1) == "int_ofNat"
+  let eqProof := mkApp3 (mkConst ``Eq [0]) (mkConst ``True) (mkConst ``True.intro)
+    (mkConst ``True.intro)
+  let eqProp := mkApp3 (mkConst ``Eq [1]) (mkSort 0) (mkConst ``True) (mkConst ``False)
+  let eqType0 := mkApp3 (mkConst ``Eq [2]) (mkSort 1) natTy intTy
+  let eqType0Max := mkApp3 (mkConst ``Eq [Level.max 2 2]) (mkSort 1) natTy intTy
+  let eqType1 := mkApp3 (mkConst ``Eq [3]) (mkSort 2) (mkSort 1) (mkSort 1)
+  assert! (← matchPolyEq eqProof) == "eq:true:true"
+  assert! (← matchPolyEq eqProp) == "eq:true:true"
+  assert! (← matchPolyEq eqType0) == "eq_type0"
+  assert! (← matchPolyEq eqType0Max) == "eq_type0"
+  assert! (← matchPolyEq eqType1) == "eq:true:true"
+  -- Mixed non-const heads
+  assert! (← matchMixedNonConst (mkSort 0)) == "prop"
+  let pairVal := mkApp2 (mkConst ``RawPair.mk) n1 n2
+  assert! (← matchMixedNonConst (Expr.proj ``RawPair 0 pairVal)) == "fst:true"
+  assert! (← matchMixedNonConst natAdd) == "nat_add:true"
+  -- `.mdata` on root, intermediate spine, and captured argument
+  let mdataArg := Expr.mdata {} n1
+  let mdataSpine :=
+    Expr.mdata {} (mkApp (Expr.mdata {} (mkApp (natAdd.appFn!.appFn!) mdataArg)) n2)
+  assert! (← matchMultiArith mdataSpine) == "nat_add:true"
+  let singleMData ← matchSingleMulMod
+    (Expr.mdata {} (← mkAppM ``HMod.hMod #[← mkAppM ``HMul.hMul #[mdataArg, n2], n3]))
+  assert! singleMData == some (n1, n2, n3)
+  -- Assigned root and nested metavariables fall back cleanly to the slow engine
+  let mRoot ← mkFreshExprMVar natTy
+  mRoot.mvarId!.assign natAdd
+  assert! (← matchMultiArith mRoot) == "nat_add:true"
+  let mNested ← mkFreshExprMVar natTy
+  mNested.mvarId!.assign n1
+  let nestedMulMod ← mkAppM ``HMod.hMod #[← mkAppM ``HMul.hMul #[mNested, n2], n3]
+  assert! (← matchMultiArith nestedMulMod) == "nat_mul_mod"
+  assert! (← matchSingleMulMod nestedMulMod).isSome
+  -- Repeated `.bvar`s (`OfNat.ofNat`): `.mdata`, mismatching args, and proof-irrelevance fallback
+  let i3 := mkRawNatLit 3
+  let i4 := mkRawNatLit 4
+  let inst3 ← mkAppOptM ``instOfNat #[some i3]
+  let inst4 ← mkAppOptM ``instOfNat #[some i4]
+  let intOfNatMData := mkApp3 (mkConst ``OfNat.ofNat [0]) intTy (Expr.mdata {} i3) inst3
+  let intOfNatMismatch := mkApp3 (mkConst ``OfNat.ofNat [0]) intTy i3 inst4
+  assert! (← matchMultiArith intOfNatMData) == "int_ofNat"
+  assert! (← matchSingleIntOfNat intOfNatMData)
+  assert! (← matchMultiArith intOfNatMismatch) == "miss"
+  assert! !(← matchSingleIntOfNat intOfNatMismatch)
+  let mkFin2 (h : Name) : Expr :=
+    mkApp3 (mkConst ``Fin.mk) (mkNatLit 5) (mkNatLit 2) (mkConst h)
+  let finA := mkFin2 ``pf25a
+  let finB := mkFin2 ``pf25b
+  let sameFinInst := mkApp (mkConst ``instSameFin) finB
+  let tagExpr := mkApp2 (mkConst ``tagFin) finA sameFinInst
+  assert! (← matchSingleTagFin tagExpr) == some finA
+  assert! (← matchIndexedTagFin tagExpr) == "tagFin"
+
+/--
+info: ok
+---
+trace: [Meta.Match.expr] [indexed structural] trying candidates [0] of 8 for:
+      1 + 2
+[Meta.Match.expr] [structural] matched:
+      ?a + _
+    against:
+      1 + 2
+[Meta.Match.expr] [structural] failed:
+      ?a * ?b % ?mE
+    against:
+      1 + 2
+    first mismatch:
+      @HMod.hMod
+    against:
+      @HAdd.hAdd
+    (constant mismatch)
+-/
+#guard_msgs in
+run_meta do
+  runAllInlineChecks
+  withOptions (fun o => o.setBool `exprQuot.debug.checkIndex true) runAllInlineChecks
+  let natTy := mkConst ``Nat
+  let n1 ← mkTypedOfNat natTy 1
+  let natAdd ← mkAppM ``HAdd.hAdd #[n1, ← mkTypedOfNat natTy 2]
+  let traceMsgs ← withOptions (fun o => o.setBool `trace.Meta.Match.expr true) do
+    let before := (← getTraces).size
+    discard <| matchMultiArith natAdd
+    discard <| matchSingleMulMod natAdd
+    return (← getTraces).size - before
+  assert! traceMsgs > 0
+  logInfo "ok"
+
+end InlineStructuralFastPath
 
 end ExprQuotIndexTest

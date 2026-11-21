@@ -1551,6 +1551,309 @@ private def buildSlotMatchCall (slot : CompiledExprSlot) (siteId : Name)
       #[siteIdExpr, patExpr, relExpr, pinIdxsExpr, pinsExpr, localItemsExpr, scrutinee,
         onMatchLam, onFailLam]
 
+private def quoteGroundLevel : Level → Expr
+  | .zero => mkConst ``Level.zero
+  | .succ u => Lean.mkApp (mkConst ``Level.succ) (quoteGroundLevel u)
+  | .max u v => Lean.mkApp2 (mkConst ``Level.max) (quoteGroundLevel u) (quoteGroundLevel v)
+  | .imax u v => Lean.mkApp2 (mkConst ``Level.imax) (quoteGroundLevel u) (quoteGroundLevel v)
+  | .param n => Lean.mkApp (mkConst ``Level.param) (toExpr n)
+  | .mvar m =>
+    Lean.mkApp (mkConst ``Level.mvar)
+      (Lean.mkApp (mkConst ``LevelMVarId.mk) (toExpr m.name))
+
+private def quoteLevelList : List Level → Expr
+  | [] => Lean.mkApp (mkConst ``List.nil [0]) (mkConst ``Level)
+  | u :: us =>
+    Lean.mkApp3 (mkConst ``List.cons [0]) (mkConst ``Level)
+      (quoteGroundLevel u) (quoteLevelList us)
+
+private def quoteOptLevelList (ms : List (Option Level)) : Expr :=
+  let optLvlTy := Lean.mkApp (mkConst ``Option [0]) (mkConst ``Level)
+  let optNone := Lean.mkApp (mkConst ``Option.none [0]) (mkConst ``Level)
+  let optSomeFn := Lean.mkApp (mkConst ``Option.some [0]) (mkConst ``Level)
+  let nilE := Lean.mkApp (mkConst ``List.nil [0]) optLvlTy
+  let consFn := Lean.mkApp (mkConst ``List.cons [0]) optLvlTy
+  let rec go : List (Option Level) → Expr
+    | [] => nilE
+    | none :: rest => Lean.mkApp2 consFn optNone (go rest)
+    | some u :: rest => Lean.mkApp2 consFn (Lean.mkApp optSomeFn (quoteGroundLevel u)) (go rest)
+  go ms
+
+private def quoteBinderInfo : BinderInfo → Expr
+  | .default => mkConst ``BinderInfo.default
+  | .implicit => mkConst ``BinderInfo.implicit
+  | .strictImplicit => mkConst ``BinderInfo.strictImplicit
+  | .instImplicit => mkConst ``BinderInfo.instImplicit
+
+private def quoteGroundExpr : Expr → Expr
+  | .bvar i => Lean.mkApp (mkConst ``Expr.bvar) (toExpr i)
+  | .fvar f => Lean.mkApp (mkConst ``Expr.fvar) (toExpr f)
+  | .mvar m =>
+    Lean.mkApp (mkConst ``Expr.mvar) (Lean.mkApp (mkConst ``MVarId.mk) (toExpr m.name))
+  | .sort u => Lean.mkApp (mkConst ``Expr.sort) (quoteGroundLevel u)
+  | .const c us => Lean.mkApp2 (mkConst ``Expr.const) (toExpr c) (quoteLevelList us)
+  | .app f a => Lean.mkApp2 (mkConst ``Expr.app) (quoteGroundExpr f) (quoteGroundExpr a)
+  | .lam n d b bi =>
+    Lean.mkApp4 (mkConst ``Expr.lam) (toExpr n) (quoteGroundExpr d) (quoteGroundExpr b)
+      (quoteBinderInfo bi)
+  | .forallE n d b bi =>
+    Lean.mkApp4 (mkConst ``Expr.forallE) (toExpr n) (quoteGroundExpr d) (quoteGroundExpr b)
+      (quoteBinderInfo bi)
+  | .letE n t v b nd =>
+    Lean.mkApp5 (mkConst ``Expr.letE) (toExpr n) (quoteGroundExpr t) (quoteGroundExpr v)
+      (quoteGroundExpr b) (toExpr nd)
+  | .lit l => Lean.mkApp (mkConst ``Expr.lit) (toExpr l)
+  | .mdata _ b => quoteGroundExpr b
+  | .proj s i b =>
+    Lean.mkApp3 (mkConst ``Expr.proj) (toExpr s) (toExpr i) (quoteGroundExpr b)
+
+private def normalizePatBodyForInline : Expr → Expr
+  | .mdata _ b => normalizePatBodyForInline b
+  | .app f a => .app (normalizePatBodyForInline f) (normalizePatBodyForInline a)
+  | .const c us => .const c (us.map Level.normalize)
+  | .sort u => .sort u.normalize
+  | .proj s i b => .proj s i (normalizePatBodyForInline b)
+  | e => e
+
+private def levelMentionsPatParams (patParams : List Name) : Level → Bool
+  | .zero | .mvar _ => false
+  | .param n => patParams.contains n
+  | .succ u => levelMentionsPatParams patParams u
+  | .max u v | .imax u v => levelMentionsPatParams patParams u || levelMentionsPatParams patParams v
+
+private def exprMentionsPatParams (patParams : List Name) (e : Expr) : Bool :=
+  if patParams.isEmpty || !e.hasLevelParam then false else go e
+where
+  go : Expr → Bool
+    | .sort u => levelMentionsPatParams patParams u
+    | .const _ us => us.any (levelMentionsPatParams patParams)
+    | .app f a => go f || go a
+    | .lam _ d b _ | .forallE _ d b _ => go d || go b
+    | .letE _ t v b _ => go t || go v || go b
+    | .mdata _ b | .proj _ _ b => go b
+    | _ => false
+
+private structure InlineCheckState where
+  astSize : Nat := 0
+  seenVars : Array Bool
+  hasRepeatedVar : Bool := false
+  seenLvlParams : NameSet := {}
+  proofCheckSubs : Array Expr := #[]
+
+private def checkInlineLevel (patParams : List Name) (u : Level) :
+    StateT InlineCheckState Option Unit := do
+  if !levelMentionsPatParams patParams u then
+    return ()
+  match u with
+  | .param p =>
+    let st ← get
+    guard (!st.seenLvlParams.contains p)
+    set { st with seenLvlParams := st.seenLvlParams.insert p }
+  | _ => failure
+
+private def checkInlineNodeHeader (slot : CompiledExprSlot) (e : Expr) :
+    StateT InlineCheckState Option Unit := do
+  let st ← get
+  guard (st.astSize + 1 ≤ 48)
+  set { st with astSize := st.astSize + 1 }
+  if !e.hasLooseBVars && exprMentionsPatParams slot.pat.levelParams e then
+    match e with
+    | .sort _ | .lit _ => pure ()
+    | _ => modify fun s => { s with proofCheckSubs := s.proofCheckSubs.push e }
+
+private def checkInlinePatBody (slot : CompiledExprSlot) :
+    Expr → StateT InlineCheckState Option Unit
+  | e@(.bvar i) => do
+    checkInlineNodeHeader slot e
+    guard (i < slot.pat.numVars)
+    let k := slot.pat.numVars - 1 - i
+    let st ← get
+    let wasSeen := st.seenVars.getD k false
+    set { st with
+      seenVars := st.seenVars.setIfInBounds k true
+      hasRepeatedVar := st.hasRepeatedVar || wasSeen
+    }
+  | e@(.app f a) => do
+    checkInlineNodeHeader slot e
+    checkInlinePatBody slot f
+    checkInlinePatBody slot a
+  | e@(.const _ us) => do
+    checkInlineNodeHeader slot e
+    for u in us do
+      checkInlineLevel slot.pat.levelParams u
+  | e@(.sort u) => do
+    checkInlineNodeHeader slot e
+    checkInlineLevel slot.pat.levelParams u
+  | e@(.lit _) =>
+    checkInlineNodeHeader slot e
+  | e@(.proj _ _ b) => do
+    checkInlineNodeHeader slot e
+    checkInlinePatBody slot b
+  | _ => failure
+
+/--
+Return `some hasRepeatedVar` if `slot` can compile via the inline `/structural` fast path, or
+`none` if the general `MetaM` matcher is required.
+-/
+private def inlineStructuralSlotInfo? (slot : CompiledExprSlot) : TermElabM (Option Bool) := do
+  unless slot.rel.engine == .structural && slot.rel.items.isEmpty && !slot.hasLocalItems do
+    return none
+  let rf := slot.rel.resolveFlags
+  if rf.inst || rf.beta || rf.zeta || rf.proj || rf.eta then
+    return none
+  unless slot.pinIdxs.isEmpty && slot.selfPins.isEmpty && slot.pat.closedProofs.isEmpty &&
+      slot.pat.firstOrder.all id do
+    return none
+  let body := normalizePatBodyForInline slot.pat.body
+  let init : InlineCheckState := { seenVars := .replicate slot.pat.numVars false }
+  let some (_, st) := (checkInlinePatBody slot body).run init | return none
+  unless slot.pat.namedIdx.all fun idx => st.seenVars.getD idx false do
+    return none
+  if st.proofCheckSubs.isEmpty then
+    return some st.hasRepeatedVar
+  let zeroLvls := slot.pat.levelParams.map fun _ => Level.zero
+  withLCtx {} {} do
+    for sub in st.proofCheckSubs do
+      let sub0 := sub.instantiateLevelParams slot.pat.levelParams zeroLvls
+      let isPf ← try Meta.isProof sub0 catch _ => pure true
+      if isPf then
+        return none
+    return some st.hasRepeatedVar
+
+private def mkBoolBranch (retTy cond thenBr elseBr : Expr) : MetaM Expr := do
+  let u ← getLevel retTy
+  let motive := mkLambda `_ .default (mkConst ``Bool) retTy
+  return Lean.mkApp4 (mkConst ``Bool.casesOn [u]) motive cond elseBr thenBr
+
+private def emitInlineGroundEq (pe curVar retTy failJump : Expr)
+    (captured : Std.HashMap Nat Expr)
+    (onDone : Std.HashMap Nat Expr → TermElabM Expr) : TermElabM Expr := do
+  let cond := Lean.mkApp2 (mkConst ``ExprPattern.Internal.eqClosedGround)
+    (quoteGroundExpr pe) curVar
+  let thenBr ← onDone captured
+  mkBoolBranch retTy cond thenBr failJump
+
+private def emitInlineBVarMatch (slot : CompiledExprSlot) (i : Nat) (curVar : Expr)
+    (extract? : Option Expr) (retTy nlFallback : Expr) (captured : Std.HashMap Nat Expr)
+    (onDone : Std.HashMap Nat Expr → TermElabM Expr) : TermElabM Expr := do
+  let k := slot.pat.numVars - 1 - i
+  if let some prevVar := captured[k]? then
+    let compareWith (v : Expr) : TermElabM Expr := do
+      let cond := Lean.mkApp2 (mkConst ``ExprPattern.Internal.eqClosedGround) prevVar v
+      let thenBr ← onDone captured
+      mkBoolBranch retTy cond thenBr nlFallback
+    match extract? with
+    | none => compareWith curVar
+    | some rhs =>
+      withLetDecl (← mkFreshUserName `__arg) (mkConst ``Expr) rhs
+          (nondep := false) (kind := .implDetail) fun var => do
+        mkLetFVars (generalizeNondepLet := false) #[var] (← compareWith var)
+  else if !(slot.pat.captureVars.getD k true) then
+    onDone captured
+  else
+    match extract? with
+    | none => onDone (captured.insert k curVar)
+    | some rhs =>
+      withLetDecl (← mkFreshUserName `__arg) (mkConst ``Expr) rhs
+          (nondep := false) (kind := .implDetail) fun var => do
+        mkLetFVars (generalizeNondepLet := false) #[var] (← onDone (captured.insert k var))
+
+private def emitInlinePatMatch (slot : CompiledExprSlot) :
+    Expr → Expr → Expr → Expr → Expr → Std.HashMap Nat Expr →
+      (Std.HashMap Nat Expr → TermElabM Expr) → TermElabM Expr
+  | .bvar i, curVar, retTy, _, nlFallback, captured, onDone =>
+    emitInlineBVarMatch slot i curVar none retTy nlFallback captured onDone
+  | pe@(.app pf pa), curVar, retTy, failJump, nlFallback, captured, onDone => do
+    if !pe.hasLooseBVars && !exprMentionsPatParams slot.pat.levelParams pe then
+      emitInlineGroundEq pe curVar retTy failJump captured onDone
+    else
+      let matchArg (cap : Std.HashMap Nat Expr) : TermElabM Expr := do
+        let argExpr := Lean.mkApp (mkConst ``Expr.consumeMData)
+          (Lean.mkApp (mkConst ``Expr.appArg!) curVar)
+        match pa with
+        | .bvar i =>
+          emitInlineBVarMatch slot i curVar (some argExpr) retTy nlFallback cap onDone
+        | _ =>
+          withLetDecl (← mkFreshUserName `__arg) (mkConst ``Expr) argExpr
+              (nondep := false) (kind := .implDetail) fun argVar => do
+            let body ← emitInlinePatMatch slot pa argVar retTy failJump nlFallback cap onDone
+            mkLetFVars (generalizeNondepLet := false) #[argVar] body
+      let thenApp ←
+        if !pf.hasLooseBVars && !exprMentionsPatParams slot.pat.levelParams pf then
+          let fnRaw := Lean.mkApp (mkConst ``Expr.appFn!) curVar
+          let condFn := Lean.mkApp2 (mkConst ``ExprPattern.Internal.eqClosedGround)
+            (quoteGroundExpr pf) fnRaw
+          let argBr ← matchArg captured
+          mkBoolBranch retTy condFn argBr failJump
+        else
+          let fnExpr := Lean.mkApp (mkConst ``Expr.consumeMData)
+            (Lean.mkApp (mkConst ``Expr.appFn!) curVar)
+          withLetDecl (← mkFreshUserName `__fn) (mkConst ``Expr) fnExpr
+              (nondep := false) (kind := .implDetail) fun fnVar => do
+            let body ← emitInlinePatMatch slot pf fnVar retTy failJump nlFallback captured matchArg
+            mkLetFVars (generalizeNondepLet := false) #[fnVar] body
+      mkBoolBranch retTy (Lean.mkApp (mkConst ``Expr.isApp) curVar) thenApp failJump
+  | pe@(.const c patLvls), curVar, retTy, failJump, _, captured, onDone => do
+    if !exprMentionsPatParams slot.pat.levelParams pe then
+      emitInlineGroundEq pe curVar retTy failJump captured onDone
+    else
+      let mask := patLvls.map fun l =>
+        match l with
+        | .param p => if slot.pat.levelParams.contains p then none else some l
+        | _ => some l
+      let cond := Lean.mkApp3 (mkConst ``ExprPattern.Internal.matchConstLevelsMask)
+        curVar (toExpr c) (quoteOptLevelList mask)
+      let thenBr ← onDone captured
+      mkBoolBranch retTy cond thenBr failJump
+  | pe@(.sort _), curVar, retTy, failJump, _, captured, onDone => do
+    if !exprMentionsPatParams slot.pat.levelParams pe then
+      emitInlineGroundEq pe curVar retTy failJump captured onDone
+    else
+      let cond := Lean.mkApp (mkConst ``Expr.isSort) curVar
+      let thenBr ← onDone captured
+      mkBoolBranch retTy cond thenBr failJump
+  | pe@(.proj sn idx pb), curVar, retTy, failJump, nlFallback, captured, onDone => do
+    if !pb.hasLooseBVars && !exprMentionsPatParams slot.pat.levelParams pe then
+      emitInlineGroundEq pe curVar retTy failJump captured onDone
+    else
+      let thenProj ← do
+        let subExpr := Lean.mkApp (mkConst ``Expr.consumeMData)
+          (Lean.mkApp (mkConst ``Expr.projExpr!) curVar)
+        match pb with
+        | .bvar i =>
+          emitInlineBVarMatch slot i curVar (some subExpr) retTy nlFallback captured onDone
+        | _ =>
+          withLetDecl (← mkFreshUserName `__sub) (mkConst ``Expr) subExpr
+              (nondep := false) (kind := .implDetail) fun subVar => do
+            let body ← emitInlinePatMatch slot pb subVar retTy failJump nlFallback captured onDone
+            mkLetFVars (generalizeNondepLet := false) #[subVar] body
+      let cond := Lean.mkApp3 (mkConst ``ExprPattern.Internal.isProjOf)
+        curVar (toExpr sn) (toExpr idx)
+      mkBoolBranch retTy cond thenProj failJump
+  | pe, curVar, retTy, failJump, _, captured, onDone =>
+    emitInlineGroundEq pe curVar retTy failJump captured onDone
+
+private def withOptionalFailJP (failCall retTy : Expr) (k : Expr → TermElabM Expr) :
+    TermElabM Expr := do
+  let wrapFail := !(failCall.isFVar || (failCall.isApp && failCall.appFn!.isFVar))
+  if wrapFail then
+    let failFnTy ← mkArrow (mkConst ``Unit) retTy
+    withLetDecl (← mkFreshUserName `__do_jp) failFnTy (mkSimpleThunk failCall)
+        (nondep := true) (kind := .implDetail) fun failJP => do
+      let body ← k (mkApp failJP (mkConst ``Unit.unit))
+      mkLetFVars (generalizeNondepLet := false) #[failJP] body
+  else
+    k failCall
+
+private def buildInlineSuccessCall (slot : CompiledExprSlot) (jpAlt : Expr)
+    (prefixArgs : Array Expr) (cap : Std.HashMap Nat Expr) : Expr :=
+  let quotArgs := slot.pat.namedIdx.map fun k => cap.getD k default
+  let allArgs := prefixArgs ++ quotArgs
+  if allArgs.isEmpty then
+    mkApp jpAlt (mkConst ``Unit.unit)
+  else
+    mkAppN jpAlt allArgs
+
 private def buildSlotChainGo (jpAlt : Expr) (alt : ExprMatchAlt) (ordFVars eqs : Array Expr)
     (failCall : Expr) (slotIdx : Nat) (quotFVars ctxArgs : Array Expr) : TermElabM Expr := do
   if h : slotIdx < alt.slots.size then
@@ -1565,10 +1868,41 @@ private def buildSlotChainGo (jpAlt : Expr) (alt : ExprMatchAlt) (ordFVars eqs :
       mkLambdaFVars #[xsVar] body
     let onFailLam ← withLocalDeclD `_ (mkConst ``Unit) fun _u =>
       mkLambdaFVars #[_u] failCall
-    try
-      buildSlotMatchCall slot siteId patExpr scrutinee onMatchLam onFailLam ctxArgs
-    catch ex =>
-      buildMatchSiteError failCall ex (isSym := slot.rel.engine == .sym)
+    let slowCall ←
+      try
+        buildSlotMatchCall slot siteId patExpr scrutinee onMatchLam onFailLam ctxArgs
+      catch ex =>
+        buildMatchSiteError failCall ex (isSym := slot.rel.engine == .sym)
+    if alt.slots.size == 1 then
+      if let some hasRep ← inlineStructuralSlotInfo? slot then
+        let retTy ← inferType failCall
+        let fastBody ← withOptionalFailJP failCall retTy fun failJump => do
+          let s0Expr := Lean.mkApp (mkConst ``Expr.consumeMData) scrutinee
+          withLetDecl (← mkFreshUserName `__scrut) (mkConst ``Expr) s0Expr
+              (nondep := false) (kind := .implDetail) fun s0Var => do
+            let patBody := normalizePatBodyForInline slot.pat.body
+            let makeFast (nlFallback : Expr) : TermElabM Expr := do
+              let body ← emitInlinePatMatch slot patBody s0Var retTy failJump nlFallback {}
+                fun cap => pure (buildInlineSuccessCall slot jpAlt (ordFVars ++ eqs) cap)
+              mkLetFVars (generalizeNondepLet := false) #[s0Var] body
+            if hasRep then
+              let onNlFail ← withLocalDeclD `_ (mkConst ``Unit) fun _u =>
+                mkLambdaFVars #[_u] failJump
+              let nlCall ←
+                try
+                  buildSlotMatchCall slot siteId patExpr scrutinee onMatchLam onNlFail ctxArgs
+                catch ex =>
+                  buildMatchSiteError failCall ex (isSym := slot.rel.engine == .sym)
+              let nlFnTy ← mkArrow (mkConst ``Unit) retTy
+              withLetDecl (← mkFreshUserName `__nl_jp) nlFnTy (mkSimpleThunk nlCall)
+                  (nondep := true) (kind := .implDetail) fun nlJP => do
+                let body ← makeFast (mkApp nlJP (mkConst ``Unit.unit))
+                mkLetFVars (generalizeNondepLet := false) #[nlJP] body
+            else
+              makeFast failJump
+        return ← mkAppM ``ExprPattern.fastStructuralGuardOrElse
+          #[toExpr false, scrutinee, mkSimpleThunk fastBody, mkSimpleThunk slowCall]
+    return slowCall
   else
     let allArgs := ordFVars ++ eqs ++ quotFVars
     if allArgs.isEmpty then
@@ -1728,6 +2062,40 @@ private def indexedRunEnd? (alts : Array ExprMatchAlt) (i : Nat) : Option (Nat �
   guard (runEnd > i)
   return (runEnd, col0)
 
+private def buildInlineRunChain (alts : Array ExprMatchAlt) (jpAlts : Array Expr)
+    (colDiscrs : Array Expr) (runStart : Nat) (tryFns : Array Expr) (hasReps : Array Bool)
+    (idxs : Array Nat) (s0Var retTy nextExpr : Expr) (off : Nat) : TermElabM Expr := do
+  let k := idxs.getD off 0
+  let altK := alts.getD k default
+  let slot := altK.slots.getD 0 default
+  let jpAlt := jpAlts.getD k default
+  let some ordMap := mapSimpleAllVarArgs altK colDiscrs
+    | throwError "internal error in expr quotation index compilation: failed to map vars"
+  let patBody := normalizePatBodyForInline slot.pat.body
+  let armBody ←
+    if hasReps.getD (k - runStart) false then
+      let onNlFail ← withLocalDeclD `_ (mkConst ``Unit) fun _u => mkLambdaFVars #[_u] nextExpr
+      let nlCall := mkApp2 (tryFns.getD (k - runStart) default) s0Var onNlFail
+      let nlFnTy ← mkArrow (mkConst ``Unit) retTy
+      withLetDecl (← mkFreshUserName `__nl_jp) nlFnTy (mkSimpleThunk nlCall)
+          (nondep := true) (kind := .implDetail) fun nlJP => do
+        let nlFallback := mkApp nlJP (mkConst ``Unit.unit)
+        let body ← emitInlinePatMatch slot patBody s0Var retTy nextExpr nlFallback {} fun cap =>
+          pure (buildInlineSuccessCall slot jpAlt ordMap cap)
+        mkLetFVars (generalizeNondepLet := false) #[nlJP] body
+    else
+      emitInlinePatMatch slot patBody s0Var retTy nextExpr nextExpr {} fun cap =>
+        pure (buildInlineSuccessCall slot jpAlt ordMap cap)
+  match off with
+  | 0 => return armBody
+  | off' + 1 =>
+    let jpTy ← mkArrow (mkConst ``Unit) retTy
+    withLetDecl (← mkFreshUserName `__do_jp) jpTy (mkSimpleThunk armBody)
+        (nondep := true) (kind := .implDetail) fun jp => do
+      let upper ← buildInlineRunChain alts jpAlts colDiscrs runStart tryFns hasReps idxs s0Var
+        retTy (mkApp jp (mkConst ``Unit.unit)) off'
+      mkLetFVars (generalizeNondepLet := false) #[jp] upper
+
 private def buildIndexedSlotRun (jpAlts : Array Expr) (alts : Array ExprMatchAlt)
     (i runEnd : Nat) (colDiscrs : Array Expr) (col0 : Nat) (failCall : Expr) :
     TermElabM Expr := do
@@ -1770,17 +2138,78 @@ private def buildIndexedSlotRun (jpAlts : Array Expr) (alts : Array ExprMatchAlt
   let scrutinee := colDiscrs.getD col0 default
   let tryAtArr ← mkArrayLit tryFnTy tryFns.toList
   let onFailLam ← withLocalDeclD `_ (mkConst ``Unit) fun _u => mkLambdaFVars #[_u] failCall
-  try
-    if rel0.engine == .sym then
-      let resolvedRelExpr := quoteResolvedExprMatchRel rel0
-      mkAppM `Lean.Meta.ExprPattern.matchSymIndexedOrElse
-        #[siteIdExpr, patArrExpr, resolvedRelExpr, scrutinee, tryAtArr, onFailLam]
-    else
-      let relExpr ← quoteExprMatchRel rel0
-      mkAppM ``ExprPattern.matchIndexedOrElse
-        #[siteIdExpr, patArrExpr, relExpr, scrutinee, tryAtArr, onFailLam]
-  catch ex =>
-    buildMatchSiteError failCall ex (isSym := rel0.engine == .sym)
+  let slowCall ←
+    try
+      if rel0.engine == .sym then
+        let resolvedRelExpr := quoteResolvedExprMatchRel rel0
+        mkAppM `Lean.Meta.ExprPattern.matchSymIndexedOrElse
+          #[siteIdExpr, patArrExpr, resolvedRelExpr, scrutinee, tryAtArr, onFailLam]
+      else
+        let relExpr ← quoteExprMatchRel rel0
+        mkAppM ``ExprPattern.matchIndexedOrElse
+          #[siteIdExpr, patArrExpr, relExpr, scrutinee, tryAtArr, onFailLam]
+    catch ex =>
+      buildMatchSiteError failCall ex (isSym := rel0.engine == .sym)
+  if rel0.engine != .sym then
+    let mut allInline := true
+    let mut hasReps : Array Bool := #[]
+    let mut constHeads : Array Name := #[]
+    let mut allConstHeads := true
+    for k in i...=runEnd do
+      let altK := alts.getD k default
+      let slot := altK.slots.getD 0 default
+      let some hasRep ← inlineStructuralSlotInfo? slot | do
+        allInline := false
+        break
+      unless (mapSimpleAllVarArgs altK colDiscrs).isSome do
+        allInline := false
+        break
+      hasReps := hasReps.push hasRep
+      if allConstHeads then
+        let patBody := normalizePatBodyForInline slot.pat.body
+        match patBody.getAppFn' with
+        | .const headName _ => constHeads := constHeads.push headName
+        | _ => allConstHeads := false
+    if allInline then
+      let fastBody ← withOptionalFailJP failCall retTy fun failJump => do
+        let s0Expr := Lean.mkApp (mkConst ``Expr.consumeMData) scrutinee
+        withLetDecl (← mkFreshUserName `__scrut) (mkConst ``Expr) s0Expr
+            (nondep := false) (kind := .implDetail) fun s0Var => do
+          let body ←
+            if allConstHeads then
+              let mut uniqueHeads : Array Name := #[]
+              for h in constHeads do
+                if !uniqueHeads.contains h then
+                  uniqueHeads := uniqueHeads.push h
+              let hdExpr := Lean.mkApp (mkConst ``Expr.getAppFn') s0Var
+              withLetDecl (← mkFreshUserName `__hd) (mkConst ``Expr) hdExpr
+                  (nondep := false) (kind := .implDetail) fun hdVar => do
+                let thenConst ←
+                  withLetDecl (← mkFreshUserName `__hdName) (mkConst ``Name)
+                      (Lean.mkApp (mkConst ``Expr.constName!) hdVar)
+                      (nondep := false) (kind := .implDetail) fun hdNameVar => do
+                    let br ← uniqueHeads.foldrM (init := failJump) fun headName elseBr => do
+                      let mut idxs : Array Nat := #[]
+                      for o in *...constHeads.size do
+                        if constHeads[o]! == headName then
+                          idxs := idxs.push (i + o)
+                      let armBr ← buildInlineRunChain alts jpAlts colDiscrs i tryFns hasReps idxs
+                        s0Var retTy failJump (idxs.size - 1)
+                      let cond := Lean.mkApp2 (mkConst `Lean.Name.beq)
+                        hdNameVar (toExpr headName)
+                      mkBoolBranch retTy cond armBr elseBr
+                    mkLetFVars (generalizeNondepLet := false) #[hdNameVar] br
+                let constChecked ← mkBoolBranch retTy
+                  (Lean.mkApp (mkConst ``Expr.isConst) hdVar) thenConst failJump
+                mkLetFVars (generalizeNondepLet := false) #[hdVar] constChecked
+            else
+              let idxs := (Array.range (runEnd - i + 1)).map (i + ·)
+              buildInlineRunChain alts jpAlts colDiscrs i tryFns hasReps idxs s0Var retTy failJump
+                (idxs.size - 1)
+          mkLetFVars (generalizeNondepLet := false) #[s0Var] body
+      return ← mkAppM ``ExprPattern.fastStructuralGuardOrElse
+        #[toExpr true, scrutinee, mkSimpleThunk fastBody, mkSimpleThunk slowCall]
+  return slowCall
 
 private def buildExprMatchDispatch (discrHNames : Array (Option Name)) (origDiscrs : Array Expr)
     (isDep isExhaustive : Bool) (alts : Array ExprMatchAlt) (jpAlts : Array Expr)
