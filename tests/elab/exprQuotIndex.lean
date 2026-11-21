@@ -731,4 +731,39 @@ run_meta do
 
 end InlineStructuralFastPath
 
+section UniversePolyClosedProofIndex
+
+opaque polyProofWrap.{u} (h : @Eq PUnit.{u} PUnit.unit PUnit.unit) (x : Nat) : Nat
+opaque polyProofOther (x : Nat) : Nat
+
+private def matchPolyProof (e : Expr) : MetaM (Option Expr) :=
+  match e with
+  | `(polyProofWrap (@Eq.refl PUnit.{_} PUnit.unit) ?x) => return some x
+  | `(polyProofOther ?x)                                => return some x
+  | _                                                   => return none
+
+#guard_msgs in
+run_meta do
+  -- Universe-polymorphic closed proof `@Eq.refl PUnit.{u} PUnit.unit` must be indexed as `.star`
+  -- so a scrutinee with a distinct `.fvar` proof matches under `exprQuot.debug.checkIndex true`.
+  let punitTy := mkConst ``PUnit [1]
+  let punitVal := mkConst ``PUnit.unit [1]
+  let eqTy := mkApp3 (mkConst ``Eq [1]) punitTy punitVal punitVal
+  withLocalDeclD `h eqTy fun h => do
+    let e := mkApp2 (mkConst ``polyProofWrap [1]) h (mkNatLit 7)
+    assertEq "universe-poly closed proof index" (← matchPolyProof e) (some (mkNatLit 7))
+  -- Sanity check: `/reducible [+$x] -zeta` unfolds `$x` without unfolding other `let`s.
+  withLetDecl `lx (mkConst ``Nat) (mkNatLit 5) fun lx =>
+  withLetDecl `ly (mkConst ``Nat) (mkNatLit 6) fun ly => do
+    let hitLx ← match (modulo := reducible [+$lx] -zeta) lx with
+      | `(5) => pure true
+      | _    => pure false
+    let hitLy ← match (modulo := reducible [+$lx] -zeta) ly with
+      | `(6) => pure true
+      | _    => pure false
+    assertEq "reducible [+$lx] -zeta hits lx" hitLx true
+    assertEq "reducible [+$lx] -zeta skips ly" hitLy false
+
+end UniversePolyClosedProofIndex
+
 end ExprQuotIndexTest

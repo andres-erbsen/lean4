@@ -1873,7 +1873,7 @@ private def matchDefEq? (p : ExprPattern) (rel : ResolvedExprMatchRel)
   let pins ← pins.mapM instantiateMVarsIfNeeded
   let runAt (target : Expr) (liftedLets : Array LetEntry) : MetaM (Option (Array Expr)) := do
     let res ←
-      if !rel.flags.zeta && rel.posFVars.isEmpty then
+      if !rel.flags.zeta then
         runDefEqOnce p pinIdxs pins transparency rel.flags false false target
       else
         match ← runDefEqOnce p pinIdxs pins transparency rel.flags false false target with
@@ -3488,8 +3488,8 @@ private theorem collectMDataAppArgs_sizeOf (e : Expr) (acc : List Expr) :
 mutual
   private def structuralPatKeysGo (allowInst : Bool) (raw : Expr) (bvarDepth : Nat)
       (keys : Array DiscrTree.Key) : MetaM (Array DiscrTree.Key) := do
-    if !raw.hasLooseBVars && !raw.hasMVar then
-      if ← isProof raw then
+    if !raw.hasLooseBVars && !raw.hasExprMVar then
+      if ← isProofSafe raw then
         return keys.push .star
     let res := collectMDataAppArgs raw
     let fn := res.1
